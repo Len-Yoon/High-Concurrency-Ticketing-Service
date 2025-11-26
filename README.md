@@ -14,6 +14,8 @@
 
 <details>
 
+<br>
+
 이 프로젝트의 목적은 단순히 “예매 기능 만들었다”가 아니라:
 
 - **Java / Spring 중급 수준 문법과 패턴을 직접 써 보는 것**
@@ -25,7 +27,7 @@
 즉, **중급 개발자로 성장하기 위해 필요한 기술 스택 전체를 한 도메인 안에 포함한 학습용 실전 프로젝트**입니다.
 </details>
 
-<br><br>
+<br>
 
 ## 2. 📚 Learning Goals (학습 목표)
 
@@ -67,11 +69,13 @@
 - 개인 서버(예: Ubuntu)에 배포 경험
 </details>
 
-<br><br>
+<br>
 
 ## 3. 🧱 Tech Stack
 
 <details>
+
+<br>
 
 **Backend**
 
@@ -106,7 +110,7 @@
 </details>
 
 
-<br><br>
+<br>
 
 ## 4. 🏗 Architecture
 
@@ -157,7 +161,7 @@ api → application → domain → infra
 </details>
 
 
-<br><br>
+<br>
 
 ## 5. 🎭 Domain & Features
 
@@ -221,13 +225,16 @@ api → application → domain → infra
 
 </details>
 
-<br><br>
+<br>
 
-## 🗄 DB Schema (Draft Overview)
-⚠️ 아래 스키마는 **초기 설계 초안**이며, 실제 구현 과정에서 변경될 수 있습니다.
-⚠️ README 상의 SQL 예시는 **핵심 제약 설명용 포인트**이며, 전체 스키마의 일부입니다.
+## 6. 🗄 DB Schema (Draft Overview)
 
 <details>
+
+<br>
+
+⚠️ 아래 스키마는 **초기 설계 초안**이며, 실제 구현 과정에서 변경될 수 있습니다. <br>
+⚠️ README 상의 SQL 예시는 **핵심 제약 설명용 포인트**이며, 전체 스키마의 일부입니다.
   
 ```sql
  -- 사용자
@@ -309,7 +316,7 @@ CREATE TABLE payment_order (
 - 고동시성 상황에서 중복 예매 방지를 위해 `reservation.uk_reservation_schedule_seat` 를 최종 방어선으로 사용
 </details>
 
-<br><br>
+<br>
 
 ## 7. ⚙️ JPA & DB 설계 포인트 (요약)
 
@@ -327,7 +334,7 @@ CREATE TABLE payment_order (
 - 도메인 규칙은 가능한 한 도메인 계층 안에 표현
 </details>
 
-<br><br>
+<br>
 
 ## 8. 🧪 Testing Strategy
 이 프로젝트는 **풀 TDD 프로젝트는 아닙니다.**
@@ -355,7 +362,7 @@ CREATE TABLE payment_order (
 > **중요한 비즈니스 규칙과 동시성 이슈를 테스트로 재현/보호하는 것**입니다.
 </details>
 
-<br><br>
+<br>
 
 ## 9. 📈 Monitoring & Observability
 
@@ -376,9 +383,9 @@ CREATE TABLE payment_order (
   - (선택) Redis, Kafka Exporter 붙여서 모니터링
 </details>
 
-<br><br>
+<br>
 
-## 🖥 Local Development & Deployment
+## 10. 🖥 Local Development & Deployment
 
 <details>
 
@@ -410,3 +417,42 @@ docker-compose up -d
 </details>
 
 <br>
+
+## 11. 🧠 What I Practiced as a Mid-Level Backend Developer
+
+<details>
+
+<br>
+
+이 프로젝트를 통해 노린 **“중급 개발자 이상 역량”** 포인트:
+
+### 1. 아키텍처 설계
+- 모놀리식이지만 레이어드/클린 아키텍처 스타일 적용
+- 도메인/인프라 분리, 유스케이스 중심 서비스 설계
+
+### 2. 도메인 & JPA 설계
+- 도메인 모델 먼저 생각하고, 그에 맞는 JPA 매핑/DB 스키마 설계
+- 연관관계, 값 타입, Unique 제약을 이용한 동시성 제어
+
+### 3. 고동시성 설계
+- Redis 기반 대기열(Waiting Room) 구현
+- 좌석 선점(Seat Lock) 설계로 동시 클릭 대응
+- DB Unique + 트랜잭션으로 최종 일관성 확보
+
+### 4. 이벤트 기반 아키텍처
+- Kafka를 이용한 결제 완료 → 예매 확정 비동기 처리
+- 멱등성/중복 이벤트 고려한 Consumer 설계
+
+### 5. 테스트 & 운영
+- 핵심 비즈니스 로직 단위/통합 테스트
+- k6 부하 테스트로 실제 트래픽 상황 가정
+- Prometheus + Grafana로 메트릭 기반 모니터링
+
+### 6. DevOps & 배포
+- Docker/Docker-compose로 로컬 개발 환경 및 서버 환경 통일
+- 개인 서버에 직접 배포해 서비스 동작 확인
+
+</details>
+
+<br>
+
