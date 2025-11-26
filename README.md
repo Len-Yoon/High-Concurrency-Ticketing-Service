@@ -119,7 +119,7 @@
 ### 4.1 전체 아키텍처 한 줄 요약
 
 > **Spring Boot 기반 모놀리식 애플리케이션**에  
-> **레이어드 아키텍처(Controller / Application / Domain / Infra)**를 적용하고,  
+> **레이어드 아키텍처(Controller / Application / Domain / Infra)를** 적용하고,  
 > **JPA 중심 도메인 설계에 Redis(대기열/좌석 락)와 Kafka(이벤트 기반 예매 확정)를 결합한,  
 > 이벤트 드리븐 고동시성 티켓팅 서비스 아키텍처**
 
