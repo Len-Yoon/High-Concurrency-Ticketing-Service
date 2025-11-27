@@ -163,8 +163,11 @@ api → application → domain → infra
     <summary>Package Structure</summary>
 
   ```text
-  com.len.ticketing
-├─ api                      // 바깥 레이어 (Web, 외부 인터페이스)
+### 4.4 📦 Package Structure (Domain-Oriented + Layered)
+
+```text
+com.len.ticketing
+├─ api                      // Web/API 레이어
 │  ├─ controller
 │  │  ├─ QueueController.java
 │  │  ├─ TicketController.java
@@ -184,67 +187,88 @@ api → application → domain → infra
 │
 ├─ application              // 유스케이스 레이어 (비즈니스 흐름)
 │  ├─ queue
-│  │  └─ QueueService.java
+│  │  └─ QueueService.java          // 대기열 진입/상태 조회 유스케이스
 │  ├─ ticket
-│  │  └─ TicketService.java
+│  │  └─ TicketService.java         // 좌석 홀드/해제/예매 흐름
 │  ├─ payment
-│  │  └─ PaymentService.java
-│  └─ dto                   // 내부 서비스 간 사용 DTO/Command
-│     ├─ HoldSeatCommand.java
-│     └─ PaymentCommand.java
+│  │  └─ PaymentService.java        // 결제 준비/확정/실패 처리
+│  └─ user
+│     └─ UserService.java           // 회원 가입/탈퇴/조회 등 (필요시)
 │
-├─ domain                   // 도메인 레이어 (엔티티/도메인 서비스/포트)
-│  ├─ model
+├─ domain                   // 도메인 레이어 (엔티티, 도메인 서비스, 포트)
+│  ├─ user
 │  │  ├─ User.java
+│  │  ├─ UserRepository.java        // Port: 사용자 저장소 추상화
+│  │  └─ UserWithdrawPolicy.java    // 탈퇴 정책 등 도메인 규칙(옵션)
+│  │
+│  ├─ concert
 │  │  ├─ Concert.java
 │  │  ├─ Schedule.java
 │  │  ├─ Seat.java
+│  │  └─ ConcertReadRepository.java // Port: 공연/회차/좌석 조회용
+│  │
+│  ├─ reservation
 │  │  ├─ Reservation.java
-│  │  └─ PaymentOrder.java
-│  ├─ value
-│  │  ├─ Money.java
-│  │  ├─ SeatNumber.java
-│  │  └─ ReservationStatus.java
-│  ├─ service               // 도메인 서비스 (규칙/계산)
-│  │  └─ ReservationPolicy.java
-│  └─ port                  // Ports (interface) ← 클린 아키텍처 핵심
-│     ├─ QueueStore.java           // 대기열(예: Redis) 추상화
-│     ├─ SeatLockStore.java        // 좌석 락 저장소 추상화
-│     ├─ ReservationRepository.java
-│     ├─ PaymentOrderRepository.java
-│     ├─ ConcertReadRepository.java
-│     └─ PaymentEventPublisher.java // 결제 완료 이벤트 발행 추상화
+│  │  ├─ ReservationRepository.java // Port: 예매 저장소
+│  │  └─ ReservationPolicy.java     // 예매 가능 여부/규칙 도메인 서비스
+│  │
+│  ├─ payment
+│  │  ├─ PaymentOrder.java
+│  │  ├─ PaymentOrderRepository.java  // Port: 결제 주문 저장소
+│  │  └─ PaymentEventPublisher.java   // Port: 결제 완료 이벤트 발행 (Kafka 등)
+│  │
+│  └─ common
+│     ├─ Money.java                  // 값 타입(Value Object)
+│     ├─ SeatNumber.java             // 값 타입(Value Object)
+│     └─ ReservationStatus.java      // 예매/결제 상태 Enum 등
 │
 ├─ infra                    // 어댑터/기술 구현 레이어
 │  ├─ persistence
-│  │  ├─ jpa
-│  │  │  ├─ entity
-│  │  │  │  ├─ ReservationEntity.java
-│  │  │  │  ├─ PaymentOrderEntity.java
-│  │  │  │  └─ ...
-│  │  │  ├─ SpringDataReservationJpaRepository.java  // extends JpaRepository
+│  │  ├─ user
+│  │  │  ├─ UserEntity.java
+│  │  │  ├─ SpringDataUserJpaRepository.java    // extends JpaRepository
+│  │  │  └─ UserRepositoryImpl.java             // implements UserRepository
+│  │  │
+│  │  ├─ concert
+│  │  │  ├─ ConcertEntity.java
+│  │  │  ├─ ScheduleEntity.java
+│  │  │  ├─ SeatEntity.java
+│  │  │  └─ ConcertReadRepositoryImpl.java      // implements ConcertReadRepository
+│  │  │
+│  │  ├─ reservation
+│  │  │  ├─ ReservationEntity.java
+│  │  │  ├─ SpringDataReservationJpaRepository.java
+│  │  │  └─ ReservationRepositoryImpl.java      // implements ReservationRepository
+│  │  │
+│  │  ├─ payment
+│  │  │  ├─ PaymentOrderEntity.java
 │  │  │  ├─ SpringDataPaymentOrderJpaRepository.java
-│  │  │  └─ ReservationRepositoryImpl.java           // implements ReservationRepository
+│  │  │  └─ PaymentOrderRepositoryImpl.java     // implements PaymentOrderRepository
+│  │  │
 │  │  └─ mapper
-│  │     └─ ReservationMapper.java                   // Entity ↔ Domain 변환
+│  │     ├─ UserMapper.java                     // Entity ↔ Domain 변환
+│  │     ├─ ConcertMapper.java
+│  │     ├─ ReservationMapper.java
+│  │     └─ PaymentOrderMapper.java
 │  │
 │  ├─ redis
-│  │  ├─ RedisQueueStore.java        // implements QueueStore
-│  │  └─ RedisSeatLockStore.java     // implements SeatLockStore
+│  │  ├─ RedisQueueStore.java        // implements QueueStore (대기열)
+│  │  └─ RedisSeatLockStore.java     // implements SeatLockStore (좌석 잠금, 필요시)
 │  │
 │  ├─ kafka
 │  │  ├─ KafkaPaymentEventPublisher.java // implements PaymentEventPublisher
-│  │  └─ PaymentCompletedConsumer.java   // @KafkaListener
+│  │  └─ PaymentCompletedConsumer.java   // @KafkaListener, 예매 확정 Consumer
 │  │
 │  ├─ config
 │  │  ├─ JpaConfig.java
 │  │  ├─ RedisConfig.java
 │  │  ├─ KafkaConfig.java
 │  │  └─ ObjectMapperConfig.java
+│  │
 │  └─ monitoring
 │     └─ PrometheusMeterConfig.java
 │
-└─ common                  // 공통 유틸/예외 등
+└─ common                  // 공통 유틸/예외 등 (레이어 공통)
    ├─ exception
    │  ├─ BusinessException.java
    │  ├─ NotFoundException.java
