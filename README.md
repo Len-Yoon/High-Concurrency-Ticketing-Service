@@ -158,6 +158,103 @@ api → application → domain → infra
 - docker-compose로 MySQL, Redis, Kafka, Prometheus, Grafana와 함께 실행
 - 개인 서버(Ubuntu)에 동일한 compose로 배포
 
+### 4.4 📦 Package Structure (Layered + Clean Architecture)
+  <details>
+    <summary>Package Structure</summary>
+
+  ```text
+  com.len.ticketing
+├─ api                      // 바깥 레이어 (Web, 외부 인터페이스)
+│  ├─ controller
+│  │  ├─ QueueController.java
+│  │  ├─ TicketController.java
+│  │  └─ PaymentController.java
+│  ├─ dto
+│  │  ├─ queue
+│  │  │  ├─ QueueEnterRequest.java
+│  │  │  └─ QueueStatusResponse.java
+│  │  ├─ ticket
+│  │  │  ├─ HoldSeatRequest.java
+│  │  │  └─ TicketResponse.java
+│  │  └─ payment
+│  │     ├─ PaymentReadyRequest.java
+│  │     └─ PaymentResultResponse.java
+│  └─ advice
+│     └─ GlobalExceptionHandler.java
+│
+├─ application              // 유스케이스 레이어 (비즈니스 흐름)
+│  ├─ queue
+│  │  └─ QueueService.java
+│  ├─ ticket
+│  │  └─ TicketService.java
+│  ├─ payment
+│  │  └─ PaymentService.java
+│  └─ dto                   // 내부 서비스 간 사용 DTO/Command
+│     ├─ HoldSeatCommand.java
+│     └─ PaymentCommand.java
+│
+├─ domain                   // 도메인 레이어 (엔티티/도메인 서비스/포트)
+│  ├─ model
+│  │  ├─ User.java
+│  │  ├─ Concert.java
+│  │  ├─ Schedule.java
+│  │  ├─ Seat.java
+│  │  ├─ Reservation.java
+│  │  └─ PaymentOrder.java
+│  ├─ value
+│  │  ├─ Money.java
+│  │  ├─ SeatNumber.java
+│  │  └─ ReservationStatus.java
+│  ├─ service               // 도메인 서비스 (규칙/계산)
+│  │  └─ ReservationPolicy.java
+│  └─ port                  // Ports (interface) ← 클린 아키텍처 핵심
+│     ├─ QueueStore.java           // 대기열(예: Redis) 추상화
+│     ├─ SeatLockStore.java        // 좌석 락 저장소 추상화
+│     ├─ ReservationRepository.java
+│     ├─ PaymentOrderRepository.java
+│     ├─ ConcertReadRepository.java
+│     └─ PaymentEventPublisher.java // 결제 완료 이벤트 발행 추상화
+│
+├─ infra                    // 어댑터/기술 구현 레이어
+│  ├─ persistence
+│  │  ├─ jpa
+│  │  │  ├─ entity
+│  │  │  │  ├─ ReservationEntity.java
+│  │  │  │  ├─ PaymentOrderEntity.java
+│  │  │  │  └─ ...
+│  │  │  ├─ SpringDataReservationJpaRepository.java  // extends JpaRepository
+│  │  │  ├─ SpringDataPaymentOrderJpaRepository.java
+│  │  │  └─ ReservationRepositoryImpl.java           // implements ReservationRepository
+│  │  └─ mapper
+│  │     └─ ReservationMapper.java                   // Entity ↔ Domain 변환
+│  │
+│  ├─ redis
+│  │  ├─ RedisQueueStore.java        // implements QueueStore
+│  │  └─ RedisSeatLockStore.java     // implements SeatLockStore
+│  │
+│  ├─ kafka
+│  │  ├─ KafkaPaymentEventPublisher.java // implements PaymentEventPublisher
+│  │  └─ PaymentCompletedConsumer.java   // @KafkaListener
+│  │
+│  ├─ config
+│  │  ├─ JpaConfig.java
+│  │  ├─ RedisConfig.java
+│  │  ├─ KafkaConfig.java
+│  │  └─ ObjectMapperConfig.java
+│  └─ monitoring
+│     └─ PrometheusMeterConfig.java
+│
+└─ common                  // 공통 유틸/예외 등
+   ├─ exception
+   │  ├─ BusinessException.java
+   │  ├─ NotFoundException.java
+   │  └─ ErrorCode.java
+   └─ util
+      └─ DateTimeUtils.java
+  ```
+    
+  </details>
+
 </details>
 
 
@@ -456,5 +553,5 @@ docker-compose up -d
 
 </details>
 
-<br>
+
 
