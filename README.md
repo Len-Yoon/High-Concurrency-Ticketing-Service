@@ -162,9 +162,6 @@ api → application → domain → infra
   <details>
     <summary>Package Structure</summary>
 
-  ```text
-### 4.4 📦 Package Structure (Domain-Oriented + Layered)
-
 ```text
 com.len.ticketing
 ├─ api                      // Web/API 레이어
