@@ -290,24 +290,23 @@ CREATE TABLE reservation (
         FOREIGN KEY (schedule_id) REFERENCES schedule (id)
 );
 
--- 결제 주문 (PG 연동용)
+-- 결제 주문 
 CREATE TABLE payment_order (
-    id          BIGINT AUTO_INCREMENT PRIMARY KEY,
-    user_id     BIGINT       NOT NULL,
-    schedule_id BIGINT       NOT NULL,
-    seat_no     VARCHAR(20)  NOT NULL,
-    amount      INT          NOT NULL,
-    status      VARCHAR(20)  NOT NULL,  -- READY / PAID / CANCELLED / FAILED ...
-    pg_order_id VARCHAR(100) NOT NULL,  -- 우리 시스템 주문 번호
-    pg_tx_id    VARCHAR(100) NULL,      -- PG 트랜잭션 ID
-    created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at  DATETIME     NULL,
-    UNIQUE KEY uk_payment_pg_order (pg_order_id),
-    UNIQUE KEY uk_payment_pg_tx    (pg_tx_id),
+    id           BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id      BIGINT       NOT NULL,
+    schedule_id  BIGINT       NOT NULL,
+    seat_no      VARCHAR(20)  NOT NULL,
+    amount       INT          NOT NULL,
+    status       VARCHAR(20)  NOT NULL,   -- READY / PAID / CANCELLED / FAILED ...
+    order_no     VARCHAR(50)  NOT NULL,   -- 우리 시스템 내부 결제 주문 번호 (표시용)
+    fail_reason  VARCHAR(255) NULL,       -- 실패/취소 사유 (옵션)
+    created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at   DATETIME     NULL,
+    UNIQUE KEY uk_payment_order_no (order_no),
     CONSTRAINT fk_payment_user
-        FOREIGN KEY (user_id)    REFERENCES user_account (id),
+        FOREIGN KEY (user_id)      REFERENCES user_account (id),
     CONSTRAINT fk_payment_schedule
-        FOREIGN KEY (schedule_id) REFERENCES schedule (id)
+        FOREIGN KEY (schedule_id)  REFERENCES schedule (id)
 );
 ```
 
