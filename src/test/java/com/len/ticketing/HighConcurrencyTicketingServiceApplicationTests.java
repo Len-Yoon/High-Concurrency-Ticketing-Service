@@ -1,4 +1,4 @@
-package com.len.high_concurrency_ticketing_service;
+package com.len.ticketing;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
