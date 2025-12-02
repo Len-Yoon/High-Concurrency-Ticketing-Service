@@ -9,6 +9,4 @@ import java.util.Optional;
 
 public interface ScheduleJpaRepository extends JpaRepository<Schedule, Long> {
     List<Schedule> findByConcertIdOrderByShowAtAsc(Long concertId);
-
-    Optional<Seat> findByScheduleIdAndSeatNo(Long scheduleId, String seatNo);
 }
