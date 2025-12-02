@@ -1,0 +1,17 @@
+### 헬스 체크
+GET http://localhost:8080/ping
+
+### 공연 목록
+GET http://localhost:8080/api/concerts
+
+### 대기열 진입
+POST http://localhost:8080/api/queue/enter
+Content-Type: application/json
+
+{
+  "scheduleId": 1,
+  "userId": 101
+}
+
+### 대기열 상태 조회
+GET http://localhost:8080/api/queue/status?scheduleId=1&userId=101
