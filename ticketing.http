@@ -15,3 +15,53 @@ Content-Type: application/json
 
 ### 대기열 상태 조회
 GET http://localhost:8080/api/queue/status?scheduleId=1&userId=101
+
+### 좌석 선점
+POST http://localhost:8080/api/tickets/hold
+Content-Type: application/json
+
+{
+  "scheduleId": 1,
+  "seatNo": "A1",
+  "userId": 101
+}
+
+### 좌석 선점 해제
+POST http://localhost:8080/api/tickets/release
+Content-Type: application/json
+
+{
+  "scheduleId": 1,
+  "seatNo": "A1",
+  "userId": 101
+}
+
+### 1번 유저가 좌석 선점
+POST http://localhost:8080/api/tickets/hold
+Content-Type: application/json
+
+{
+  "scheduleId": 1,
+  "seatNo": "A1",
+  "userId": 101
+}
+
+### 같은 유저가 또 선점 시도
+POST http://localhost:8080/api/tickets/hold
+Content-Type: application/json
+
+{
+  "scheduleId": 1,
+  "seatNo": "A1",
+  "userId": 101
+}
+
+### 다른 유저가 선점 시도
+POST http://localhost:8080/api/tickets/hold
+Content-Type: application/json
+
+{
+  "scheduleId": 1,
+  "seatNo": "A1",
+  "userId": 102
+}
