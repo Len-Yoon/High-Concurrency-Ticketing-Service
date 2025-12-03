@@ -65,3 +65,35 @@ Content-Type: application/json
   "seatNo": "A1",
   "userId": 102
 }
+
+### 1. (대기열 안 타고) 바로 좌석 선점 시도 → 실패 해야 함
+POST http://localhost:8080/api/tickets/hold
+Content-Type: application/json
+
+{
+  "scheduleId": 1,
+  "seatNo": "A1",
+  "userId": 101
+}
+
+### 2. 대기열 진입
+POST http://localhost:8080/api/queue/enter
+Content-Type: application/json
+
+{
+  "scheduleId": 1,
+  "userId": 101
+}
+
+### 3. 대기열 상태 확인 (optional)
+GET http://localhost:8080/api/queue/status?scheduleId=1&userId=101
+
+### 4. 다시 좌석 선점 시도 → 이제 성공해야 함
+POST http://localhost:8080/api/tickets/hold
+Content-Type: application/json
+
+{
+  "scheduleId": 1,
+  "seatNo": "A1",
+  "userId": 101
+}
