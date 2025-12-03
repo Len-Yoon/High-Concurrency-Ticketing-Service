@@ -97,3 +97,31 @@ Content-Type: application/json
   "seatNo": "A1",
   "userId": 101
 }
+
+### 1. 좌석 선점 (이미 구현돼 있던 거)
+POST http://localhost:8080/api/tickets/hold
+Content-Type: application/json
+
+{
+  "scheduleId": 1,
+  "seatNo": "A1",
+  "userId": 101
+}
+
+### 2. 결제 준비 (ready)
+POST http://localhost:8080/api/payment/ready
+Content-Type: application/json
+
+{
+  "userId": 101,
+  "scheduleId": 1,
+  "seatNo": "A1"
+}
+
+### 3. (위 응답에서 orderNo 복사해서) 모의 결제 성공
+POST http://localhost:8080/api/payment/mock-success
+Content-Type: application/json
+
+{
+  "orderNo": "여기에_2번에서_받은_orderNo_붙여"
+}
