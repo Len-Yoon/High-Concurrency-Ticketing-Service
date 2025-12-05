@@ -1,5 +1,7 @@
 package com.len.ticketing.application.payment;
 
+import com.len.ticketing.common.exception.BusinessException;
+import com.len.ticketing.common.exception.ErrorCode;
 import com.len.ticketing.domain.concert.Seat;
 import com.len.ticketing.domain.payment.PaymentOrder;
 import com.len.ticketing.domain.payment.PaymentStatus;
@@ -31,12 +33,12 @@ public class PaymentService {
     public PaymentReadyResult ready(Long userId, Long scheduleId, String seatNo) {
         // 1. 좌석 존재 여부 확인
         Seat seat = seatRepository.findByScheduleIdAndSeatNo(scheduleId, seatNo)
-                .orElseThrow(() -> new IllegalArgumentException("좌석이 존재하지 않습니다."));
+                .orElseThrow(() -> new BusinessException(ErrorCode.SEAT_NOT_FOUND));
 
         // 2. 이 사용자가 진짜 좌석을 선점했는지 확인
         Long owner = seatLockStore.getLockOwner(scheduleId, seatNo);
         if (owner == null || !owner.equals(userId)) {
-            throw new IllegalStateException("해당 사용자가 이 좌석을 선점하지 않았습니다.");
+            throw new BusinessException(ErrorCode.NOT_SEAT_OWNER);
         }
 
         int amount = seat.getPrice();
