@@ -1,5 +1,7 @@
 package com.len.ticketing.application.ticket;
 
+import com.len.ticketing.common.exception.BusinessException;
+import com.len.ticketing.common.exception.ErrorCode;
 import com.len.ticketing.domain.concert.Seat;
 import com.len.ticketing.domain.queue.QueueStore;
 import com.len.ticketing.domain.ticket.SeatLockStore;
@@ -32,15 +34,25 @@ public class TicketService {
         }
 
         // 1. 좌석 존재 여부 체크
+        // before
+//        Seat seat = seatRepository.findByScheduleIdAndSeatNo(scheduleId, seatNo)
+//                .orElseThrow(() -> new IllegalArgumentException("좌석이 존재하지 않습니다."));
+
+        // after
         Seat seat = seatRepository.findByScheduleIdAndSeatNo(scheduleId, seatNo)
-                .orElseThrow(() -> new IllegalArgumentException("좌석이 존재하지 않습니다."));
+                .orElseThrow(() -> new BusinessException(ErrorCode.SEAT_NOT_FOUND));
 
         // 2. 좌석 락 시도
         boolean locked = seatLockStore.lockSeat(scheduleId, seatNo, userId, SEAT_LOCK_TTL_SECONDS);
         if (!locked) {
             Long owner = seatLockStore.getLockOwner(scheduleId, seatNo);
-            if (owner != null && owner != userId) {
-                return new HoldSeatResult(false, "이미 다른 사용자가 선점한 좌석입니다.");
+            //before
+//            if (owner != null && owner != userId) {
+//                return new HoldSeatResult(false, "이미 다른 사용자가 선점한 좌석입니다.");
+
+            // after
+            if (owner != null && !owner.equals(userId)) {
+                throw new BusinessException(ErrorCode.SEAT_ALREADY_LOCKED);
             } else {
                 return new HoldSeatResult(false, "좌석 선점에 실패했습니다.");
             }
