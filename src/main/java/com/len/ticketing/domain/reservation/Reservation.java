@@ -7,8 +7,6 @@ import lombok.NoArgsConstructor;
 
 import java.time.LocalDateTime;
 
-@Getter
-@NoArgsConstructor(access = AccessLevel.PROTECTED)
 @Entity
 @Table(
         name = "reservation",
@@ -19,6 +17,8 @@ import java.time.LocalDateTime;
                 )
         }
 )
+@Getter
+@NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class Reservation {
 
     @Id
@@ -31,7 +31,7 @@ public class Reservation {
     @Column(name = "schedule_id", nullable = false)
     private Long scheduleId;
 
-    @Column(name = "seat_no", nullable = false, length = 20)
+    @Column(name = "seat_no", nullable = false)
     private String seatNo;
 
     @Column(name = "created_at", nullable = false)

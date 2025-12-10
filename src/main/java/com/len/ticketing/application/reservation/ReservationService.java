@@ -1,4 +1,3 @@
-// src/main/java/com/len/ticketing/application/reservation/ReservationService.java
 package com.len.ticketing.application.reservation;
 
 import com.len.ticketing.domain.reservation.Reservation;
@@ -14,22 +13,25 @@ public class ReservationService {
 
     private final ReservationJpaRepository reservationRepository;
 
+    /**
+     * 좌석 홀드 / 예약
+     * - 같은 (scheduleId, seatNo)에 대해 중복 예약 방지
+     */
     @Transactional
     public Reservation hold(Long userId, Long scheduleId, String seatNo) {
 
-        // 1차 방어: 이미 예약된 좌석인지 확인
+        // 1차 방어: 이미 예약된 좌석인지 체크
         if (reservationRepository.existsByScheduleIdAndSeatNo(scheduleId, seatNo)) {
             throw new IllegalStateException("이미 예약된 좌석입니다.");
         }
 
-        // 너 엔티티에 맞게 생성 방식만 맞춰주면 됨
+        // 엔티티 생성
         Reservation reservation = Reservation.create(userId, scheduleId, seatNo);
-        // create 없으면 new Reservation(...)로 맞춰서 쓰면 되고
 
         try {
+            // 2차 방어: 유니크 제약 위반 (동시성) → 예외 변환
             return reservationRepository.save(reservation);
         } catch (DataIntegrityViolationException e) {
-            // 동시성으로 한 번 더 들어온 애들
             throw new IllegalStateException("이미 예약된 좌석입니다.");
         }
     }

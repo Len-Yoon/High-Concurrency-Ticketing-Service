@@ -8,4 +8,5 @@ public record ReservationResponse(
         Long scheduleId,
         String seatNo,
         LocalDateTime createdAt
-) {}
+) {
+}

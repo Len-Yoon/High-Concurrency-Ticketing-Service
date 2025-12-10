@@ -7,8 +7,9 @@ import java.util.List;
 
 public interface ReservationJpaRepository extends JpaRepository<Reservation, Long> {
 
-    // 조회 메서드 추가
+    // 유저 예매 목록 조회
     List<Reservation> findByUserId(Long userId);
 
+    // 같은 (scheduleId, seatNo) 가 이미 존재하는지
     boolean existsByScheduleIdAndSeatNo(Long scheduleId, String seatNo);
 }
