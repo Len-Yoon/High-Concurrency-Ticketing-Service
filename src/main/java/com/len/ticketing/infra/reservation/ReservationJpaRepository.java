@@ -9,4 +9,6 @@ public interface ReservationJpaRepository extends JpaRepository<Reservation, Lon
 
     // 조회 메서드 추가
     List<Reservation> findByUserId(Long userId);
+
+    boolean existsByScheduleIdAndSeatNo(Long scheduleId, String seatNo);
 }
