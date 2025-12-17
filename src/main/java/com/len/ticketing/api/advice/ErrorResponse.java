@@ -30,4 +30,14 @@ public record ErrorResponse(
                 path
         );
     }
+
+    public static ErrorResponse of(ErrorCode errorCode, String path, String overrideMessage) {
+        return new ErrorResponse(
+                java.time.LocalDateTime.now(),
+                errorCode.getHttpStatus().value(),
+                errorCode.getCode(),
+                overrideMessage,
+                path
+        );
+    }
 }
