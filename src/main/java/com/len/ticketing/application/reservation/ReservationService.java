@@ -32,7 +32,7 @@ public class ReservationService {
             // 2차 방어: 유니크 제약 위반 (동시성) → 예외 변환
             return reservationRepository.save(reservation);
         } catch (DataIntegrityViolationException e) {
-            throw new IllegalStateException("이미 예약된 좌석입니다.");
+            throw new SeatAlreadyReservedException("이미 예약된 좌석입니다.");
         }
     }
 }
