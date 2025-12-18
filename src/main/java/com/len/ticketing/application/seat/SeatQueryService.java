@@ -1,9 +1,9 @@
 package com.len.ticketing.application.seat;
 
 import com.len.ticketing.api.seat.dto.SeatStatusResponse;
-import com.len.ticketing.domain.seat.Seat;
+import com.len.ticketing.domain.concert.Seat;
 import com.len.ticketing.infra.reservation.ReservationJpaRepository;
-import com.len.ticketing.infra.seat.SeatJpaRepository;
+import com.len.ticketing.infra.concert.SeatJpaRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -25,8 +25,8 @@ public class SeatQueryService {
     @Transactional(readOnly = true)
     public List<SeatStatusResponse> getSeatStatus(Long scheduleId) {
 
-        // 1) 해당 스케줄의 전체 좌석
-        List<Seat> seats = seatRepository.findByScheduleId(scheduleId);
+        // 1) 해당 스케줄의 전체 좌석 (좌석 번호 오름차순)
+        List<Seat> seats = seatRepository.findByScheduleIdOrderBySeatNoAsc(scheduleId);
 
         // 2) 해당 스케줄에서 이미 예매된 좌석 번호 목록
         List<String> reservedSeatNos = reservationRepository.findSeatNosByScheduleId(scheduleId);
