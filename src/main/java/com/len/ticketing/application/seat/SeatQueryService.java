@@ -29,7 +29,7 @@ public class SeatQueryService {
         List<Seat> seats = seatRepository.findByScheduleIdOrderBySeatNoAsc(scheduleId);
 
         // 2) 해당 스케줄에서 이미 예매된 좌석 번호 목록
-        List<String> reservedSeatNos = reservationRepository.findSeatNosByScheduleId(scheduleId);
+        List<String> reservedSeatNos = reservationRepository.findActiveSeatNos(scheduleId, java.time.LocalDateTime.now());
         Set<String> reservedSet = new HashSet<>(reservedSeatNos);
 
         // 3) seat + reserved 여부 묶어서 반환
