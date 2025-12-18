@@ -11,4 +11,6 @@ public interface SeatJpaRepository extends JpaRepository<Seat, Long> {
     List<Seat> findByScheduleIdOrderBySeatNoAsc(Long scheduleId);
 
     Optional<Seat> findByScheduleIdAndSeatNo(Long scheduleId, String seatNo);
+
+    boolean existsByScheduleIdAndSeatNo(Long scheduleId, String seatNo);
 }
