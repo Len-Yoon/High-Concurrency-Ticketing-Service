@@ -25,6 +25,7 @@ public class PaymentService {
     private final SeatLockStore seatLockStore;
     private final PaymentOrderJpaRepository paymentOrderRepository;
     private final ReservationJpaRepository reservationRepository;
+    private final com.len.ticketing.application.reservation.ReservationService reservationService;
 
     /**
      * 결제 준비: 좌석/락 확인 후 PaymentOrder 생성

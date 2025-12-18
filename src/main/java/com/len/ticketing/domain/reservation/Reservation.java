@@ -84,4 +84,14 @@ public class Reservation {
         this.active = null;
         this.updatedAt = now;
     }
+
+    public static Reservation create(Long userId, Long scheduleId, String seatNo) {
+        return newHold(
+                userId,
+                scheduleId,
+                seatNo == null ? null : seatNo.trim().toUpperCase(),
+                java.time.LocalDateTime.now(),
+                java.time.Duration.ofMinutes(3)
+        );
+    }
 }
