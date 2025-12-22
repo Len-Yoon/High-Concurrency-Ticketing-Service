@@ -1,51 +1,43 @@
 package com.len.ticketing.domain.reservation;
 
 import jakarta.persistence.*;
-import lombok.AccessLevel;
-import lombok.Getter;
-import lombok.NoArgsConstructor;
-import org.hibernate.annotations.CreationTimestamp;
-import org.hibernate.annotations.UpdateTimestamp;
+import lombok.*;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
 
-@Entity
-@Table(name = "reservation")
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
+@Entity
+@Table(name = "reservation")
 public class Reservation {
 
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(name = "user_id", nullable = false)
+    @Column(name="user_id", nullable=false)
     private Long userId;
 
-    @Column(name = "schedule_id", nullable = false)
+    @Column(name="schedule_id", nullable=false)
     private Long scheduleId;
 
-    @Column(name = "seat_no", nullable = false, length = 255)
+    @Column(name="seat_no", nullable=false)
     private String seatNo;
 
     @Enumerated(EnumType.STRING)
-    @Column(name = "status", nullable = false)
+    @Column(name="status", nullable=false)
     private ReservationStatus status;
 
-    @Column(name = "expires_at")
+    @Column(name="expires_at")
     private LocalDateTime expiresAt;
 
-    // active=1이면 점유중, NULL이면 해제됨(취소/만료)
-    @Column(name = "active")
-    private Integer active;
+    @Column(name="active")
+    private Integer active; // 1=활성, NULL=비활성
 
-    @CreationTimestamp
-    @Column(name = "created_at", updatable = false)
+    @Column(name="created_at", updatable=false)
     private LocalDateTime createdAt;
 
-    @UpdateTimestamp
-    @Column(name = "updated_at")
+    @Column(name="updated_at")
     private LocalDateTime updatedAt;
 
     public static Reservation newHold(Long userId, Long scheduleId, String seatNo,
@@ -53,17 +45,13 @@ public class Reservation {
         Reservation r = new Reservation();
         r.userId = userId;
         r.scheduleId = scheduleId;
-        r.seatNo = seatNo;
+        r.seatNo = normalize(seatNo);
         r.status = ReservationStatus.HELD;
         r.expiresAt = now.plus(ttl);
-        r.active = 1;
+        r.active = 1;            // ✅ 이거 없으면 active=NULL로 들어감
+        r.createdAt = now;
+        r.updatedAt = now;
         return r;
-    }
-
-    public boolean isExpired(LocalDateTime now) {
-        return status == ReservationStatus.HELD
-                && expiresAt != null
-                && expiresAt.isBefore(now);
     }
 
     public void confirm(LocalDateTime now) {
@@ -73,25 +61,13 @@ public class Reservation {
         this.updatedAt = now;
     }
 
-    public void cancel(LocalDateTime now) {
-        this.status = ReservationStatus.CANCELLED;
-        this.active = null;
-        this.updatedAt = now;
-    }
-
     public void expire(LocalDateTime now) {
         this.status = ReservationStatus.EXPIRED;
         this.active = null;
         this.updatedAt = now;
     }
 
-    public static Reservation create(Long userId, Long scheduleId, String seatNo) {
-        return newHold(
-                userId,
-                scheduleId,
-                seatNo == null ? null : seatNo.trim().toUpperCase(),
-                java.time.LocalDateTime.now(),
-                java.time.Duration.ofMinutes(3)
-        );
+    private static String normalize(String raw) {
+        return raw == null ? null : raw.trim().toUpperCase();
     }
 }

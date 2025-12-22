@@ -1,11 +1,13 @@
 package com.len.ticketing.application.reservation;
 
+import com.len.ticketing.common.exception.BusinessException;
+import com.len.ticketing.common.exception.ErrorCode;
+import com.len.ticketing.domain.concert.Seat;
 import com.len.ticketing.domain.reservation.Reservation;
 import com.len.ticketing.domain.reservation.ReservationStatus;
 import com.len.ticketing.infra.concert.SeatJpaRepository;
 import com.len.ticketing.infra.reservation.ReservationJpaRepository;
 import lombok.RequiredArgsConstructor;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -16,86 +18,59 @@ import java.time.LocalDateTime;
 @RequiredArgsConstructor
 public class ReservationService {
 
+    private final SeatJpaRepository seatRepository;
+    private final ReservationJpaRepository reservationRepository;
+
     private static final Duration HOLD_TTL = Duration.ofMinutes(3);
 
-    private final ReservationJpaRepository reservationRepository;
-    private final SeatJpaRepository seatRepository;
-
     @Transactional
-    public Reservation hold(Long userId, Long scheduleId, String seatNoRaw) {
-        String seatNo = normalizeSeatNo(seatNoRaw);
+    public void hold(Long userId, Long scheduleId, String seatNo) {
+        String sn = seatNo.trim().toUpperCase();
         LocalDateTime now = LocalDateTime.now();
 
-        // 좌석 존재 체크
-        if (!seatRepository.existsByScheduleIdAndSeatNo(scheduleId, seatNo)) {
-            throw new IllegalArgumentException("없는 좌석");
-        }
+        // 좌석 존재 확인
+        Seat seat = seatRepository.findByScheduleIdAndSeatNo(scheduleId, sn)
+                .orElseThrow(() -> new BusinessException(ErrorCode.SEAT_NOT_FOUND));
 
-        // 기존 점유 row(락)
-        var activeOpt = reservationRepository.findActiveForUpdate(scheduleId, seatNo);
+        // active=1 row 락 조회
+        var existingOpt = reservationRepository.findActiveForUpdate(scheduleId, sn);
+        if (existingOpt.isPresent()) {
+            var existing = existingOpt.get();
 
-        if (activeOpt.isPresent()) {
-            Reservation r = activeOpt.get();
-
-            // 확정 예매는 무조건 막기
-            if (r.getStatus() == ReservationStatus.CONFIRMED) {
+            // 이미 확정이면 막기
+            if (existing.getStatus() == ReservationStatus.CONFIRMED) {
                 throw new IllegalStateException("이미 예매된 좌석");
             }
 
-            // 홀드가 아직 유효하면 막기
-            if (r.getStatus() == ReservationStatus.HELD && !r.isExpired(now)) {
+            // HELD + 아직 만료 전이면 막기
+            if (existing.getStatus() == ReservationStatus.HELD
+                    && existing.getExpiresAt() != null
+                    && existing.getExpiresAt().isAfter(now)) {
                 throw new IllegalStateException("이미 홀드된 좌석");
             }
 
-            // 만료된 HELD라면 해제(Expire) 처리
-            r.expire(now);
-            // 여기서 active=null로 풀림
+            // 만료된 HELD면 expire 처리 후 새 hold 생성
+            existing.expire(now);
         }
 
-        // 새 HOLD 생성 (동시성 최종 방어: 유니크 인덱스)
-        try {
-            return reservationRepository.save(Reservation.newHold(userId, scheduleId, seatNo, now, HOLD_TTL));
-        } catch (DataIntegrityViolationException e) {
-            // 누가 먼저 잡았음
-            throw new IllegalStateException("이미 홀드/예매된 좌석");
-        }
+        reservationRepository.save(Reservation.newHold(userId, scheduleId, sn, now, HOLD_TTL));
     }
 
     @Transactional
-    public void confirm(Long userId, Long scheduleId, String seatNoRaw) {
-        String seatNo = normalizeSeatNo(seatNoRaw);
+    public void confirm(Long userId, Long scheduleId, String seatNo) {
+        String sn = seatNo.trim().toUpperCase();
         LocalDateTime now = LocalDateTime.now();
 
-        Reservation r = reservationRepository.findActiveForUpdate(scheduleId, seatNo)
+        var r = reservationRepository.findActiveForUpdate(scheduleId, sn)
                 .orElseThrow(() -> new IllegalStateException("홀드 없음"));
 
-        if (!r.getUserId().equals(userId)) {
-            throw new IllegalStateException("본인 홀드 아님");
-        }
-        if (r.getStatus() == ReservationStatus.HELD && r.isExpired(now)) {
+        if (!r.getUserId().equals(userId)) throw new IllegalStateException("홀드 없음");
+        if (r.getStatus() != ReservationStatus.HELD) throw new IllegalStateException("홀드 없음");
+        if (r.getExpiresAt() != null && r.getExpiresAt().isBefore(now)) {
             r.expire(now);
-            throw new IllegalStateException("홀드 만료");
+            throw new IllegalStateException("홀드 없음");
         }
 
         r.confirm(now);
-    }
-
-    @Transactional
-    public void cancel(Long userId, Long scheduleId, String seatNoRaw) {
-        String seatNo = normalizeSeatNo(seatNoRaw);
-        LocalDateTime now = LocalDateTime.now();
-
-        Reservation r = reservationRepository.findActiveForUpdate(scheduleId, seatNo)
-                .orElseThrow(() -> new IllegalStateException("홀드 없음"));
-
-        if (!r.getUserId().equals(userId)) {
-            throw new IllegalStateException("본인 홀드 아님");
-        }
-
-        r.cancel(now); // active=null로 해제
-    }
-
-    private String normalizeSeatNo(String raw) {
-        return raw == null ? null : raw.trim().toUpperCase();
     }
 }

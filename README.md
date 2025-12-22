@@ -10,8 +10,9 @@
 
 <br><br>
 
-## 1. 🎯 Motivation
 
+## 1) 🎯 핵심 설계 결정 (중요)
+### ✅ Seat Hold(좌석 선점)의 SSOT는 DB(reservation)
 <details>
 
 <br>
@@ -164,114 +165,73 @@ api → application → domain → infra
 
 ```text
 com.len.ticketing
-├─ api                      // Web/API 레이어
+├─ api
 │  ├─ controller
 │  │  ├─ QueueController.java
-│  │  ├─ TicketController.java
-│  │  └─ PaymentController.java
+│  │  ├─ ReservationController.java      // /api/reservations/hold
+│  │  ├─ SeatController.java             // /api/seats/available 등(있으면)
+│  │  └─ PaymentController.java          // /api/payment/ready, /api/payment/mock-success
 │  ├─ dto
 │  │  ├─ queue
 │  │  │  ├─ QueueEnterRequest.java
 │  │  │  └─ QueueStatusResponse.java
-│  │  ├─ ticket
-│  │  │  ├─ HoldSeatRequest.java
-│  │  │  └─ TicketResponse.java
+│  │  ├─ reservation
+│  │  │  ├─ HoldRequest.java
+│  │  │  └─ HoldResponse.java
+│  │  ├─ seat
+│  │  │  └─ SeatStatusResponse.java
 │  │  └─ payment
 │  │     ├─ PaymentReadyRequest.java
+│  │     ├─ PaymentReadyResponse.java
+│  │     ├─ MockSuccessRequest.java
 │  │     └─ PaymentResultResponse.java
 │  └─ advice
 │     └─ GlobalExceptionHandler.java
 │
-├─ application              // 유스케이스 레이어 (비즈니스 흐름)
+├─ application
 │  ├─ queue
-│  │  └─ QueueService.java          // 대기열 진입/상태 조회 유스케이스
-│  ├─ ticket
-│  │  └─ TicketService.java         // 좌석 홀드/해제/예매 흐름
-│  ├─ payment
-│  │  └─ PaymentService.java        // 결제 준비/확정/실패 처리
-│  └─ user
-│     └─ UserService.java           // 회원 가입/탈퇴/조회 등 (필요시)
+│  │  └─ QueueService.java
+│  ├─ reservation
+│  │  ├─ ReservationService.java         // hold/confirm/expire
+│  │  └─ ReservationExpireJob.java       // (옵션) 만료 배치/스케줄러
+│  ├─ seat
+│  │  └─ SeatQueryService.java           // 잔여좌석/상태조회
+│  └─ payment
+│     └─ PaymentService.java             // ready/mockSuccess(=confirm 호출)
 │
-├─ domain                   // 도메인 레이어 (엔티티, 도메인 서비스, 포트)
-│  ├─ user
-│  │  ├─ User.java
-│  │  ├─ UserRepository.java        // Port: 사용자 저장소 추상화
-│  │  └─ UserWithdrawPolicy.java    // 탈퇴 정책 등 도메인 규칙(옵션)
-│  │
+├─ domain
 │  ├─ concert
 │  │  ├─ Concert.java
 │  │  ├─ Schedule.java
-│  │  ├─ Seat.java
-│  │  └─ ConcertReadRepository.java // Port: 공연/회차/좌석 조회용
-│  │
+│  │  └─ Seat.java
 │  ├─ reservation
-│  │  ├─ Reservation.java
-│  │  ├─ ReservationRepository.java // Port: 예매 저장소
-│  │  └─ ReservationPolicy.java     // 예매 가능 여부/규칙 도메인 서비스
-│  │
+│  │  ├─ Reservation.java                // status/active/expiresAt 포함
+│  │  └─ ReservationStatus.java          // HELD/CONFIRMED/EXPIRED/CANCELLED
 │  ├─ payment
 │  │  ├─ PaymentOrder.java
-│  │  ├─ PaymentOrderRepository.java  // Port: 결제 주문 저장소
-│  │  └─ PaymentEventPublisher.java   // Port: 결제 완료 이벤트 발행 (Kafka 등)
-│  │
-│  └─ common
-│     ├─ Money.java                  // 값 타입(Value Object)
-│     ├─ SeatNumber.java             // 값 타입(Value Object)
-│     └─ ReservationStatus.java      // 예매/결제 상태 Enum 등
+│  │  └─ PaymentStatus.java
+│  └─ queue
+│     └─ QueueStore.java                 // Port
 │
-├─ infra                    // 어댑터/기술 구현 레이어
-│  ├─ persistence
-│  │  ├─ user
-│  │  │  ├─ UserEntity.java
-│  │  │  ├─ SpringDataUserJpaRepository.java    // extends JpaRepository
-│  │  │  └─ UserRepositoryImpl.java             // implements UserRepository
-│  │  │
-│  │  ├─ concert
-│  │  │  ├─ ConcertEntity.java
-│  │  │  ├─ ScheduleEntity.java
-│  │  │  ├─ SeatEntity.java
-│  │  │  └─ ConcertReadRepositoryImpl.java      // implements ConcertReadRepository
-│  │  │
-│  │  ├─ reservation
-│  │  │  ├─ ReservationEntity.java
-│  │  │  ├─ SpringDataReservationJpaRepository.java
-│  │  │  └─ ReservationRepositoryImpl.java      // implements ReservationRepository
-│  │  │
-│  │  ├─ payment
-│  │  │  ├─ PaymentOrderEntity.java
-│  │  │  ├─ SpringDataPaymentOrderJpaRepository.java
-│  │  │  └─ PaymentOrderRepositoryImpl.java     // implements PaymentOrderRepository
-│  │  │
-│  │  └─ mapper
-│  │     ├─ UserMapper.java                     // Entity ↔ Domain 변환
-│  │     ├─ ConcertMapper.java
-│  │     ├─ ReservationMapper.java
-│  │     └─ PaymentOrderMapper.java
-│  │
-│  ├─ redis
-│  │  ├─ RedisQueueStore.java        // implements QueueStore (대기열)
-│  │  └─ RedisSeatLockStore.java     // implements SeatLockStore (좌석 잠금, 필요시)
-│  │
-│  ├─ kafka
-│  │  ├─ KafkaPaymentEventPublisher.java // implements PaymentEventPublisher
-│  │  └─ PaymentCompletedConsumer.java   // @KafkaListener, 예매 확정 Consumer
-│  │
-│  ├─ config
-│  │  ├─ JpaConfig.java
-│  │  ├─ RedisConfig.java
-│  │  ├─ KafkaConfig.java
-│  │  └─ ObjectMapperConfig.java
-│  │
-│  └─ monitoring
-│     └─ PrometheusMeterConfig.java
+├─ infra
+│  ├─ concert
+│  │  ├─ ConcertJpaRepository.java
+│  │  ├─ ScheduleJpaRepository.java
+│  │  └─ SeatJpaRepository.java
+│  ├─ reservation
+│  │  └─ ReservationJpaRepository.java   // findActiveForUpdate / findActiveSeatNos / expireAll
+│  ├─ payment
+│  │  └─ PaymentOrderJpaRepository.java
+│  └─ redis
+│     └─ RedisQueueStore.java            // QueueStore 구현(ZSET)
 │
-└─ common                  // 공통 유틸/예외 등 (레이어 공통)
+└─ common
    ├─ exception
    │  ├─ BusinessException.java
-   │  ├─ NotFoundException.java
    │  └─ ErrorCode.java
    └─ util
       └─ DateTimeUtils.java
+
   ```
     
   </details>
@@ -357,74 +317,78 @@ com.len.ticketing
 ```sql
  -- 사용자
 CREATE TABLE user_account (
-    id          BIGINT AUTO_INCREMENT PRIMARY KEY,
-    email       VARCHAR(100) NOT NULL,
-    name        VARCHAR(50)  NOT NULL,
-    created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    email VARCHAR(100) NOT NULL,
+    name VARCHAR(50) NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uk_user_email (email)
 );
 
 -- 공연
 CREATE TABLE concert (
-    id          BIGINT AUTO_INCREMENT PRIMARY KEY,
-    title       VARCHAR(100) NOT NULL,
-    description TEXT         NULL,
-    created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    title VARCHAR(100) NOT NULL,
+    description TEXT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- 공연 회차
+-- 회차
 CREATE TABLE schedule (
-    id          BIGINT AUTO_INCREMENT PRIMARY KEY,
-    concert_id  BIGINT       NOT NULL,
-    show_at     DATETIME     NOT NULL,
-    created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT fk_schedule_concert
-        FOREIGN KEY (concert_id) REFERENCES concert (id)
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    concert_id BIGINT NOT NULL,
+    show_at DATETIME NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_schedule_concert FOREIGN KEY (concert_id) REFERENCES concert(id)
 );
 
--- 회차별 좌석 정보
+-- 좌석
 CREATE TABLE seat (
-    id          BIGINT AUTO_INCREMENT PRIMARY KEY,
-    schedule_id BIGINT       NOT NULL,
-    seat_no     VARCHAR(20)  NOT NULL,
-    price       INT          NOT NULL,
-    created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    schedule_id BIGINT NOT NULL,
+    seat_no VARCHAR(20) NOT NULL,
+    price INT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uk_seat_schedule_seat (schedule_id, seat_no),
-    CONSTRAINT fk_seat_schedule
-        FOREIGN KEY (schedule_id) REFERENCES schedule (id)
+    CONSTRAINT fk_seat_schedule FOREIGN KEY (schedule_id) REFERENCES schedule(id)
 );
 
--- 최종 예매
+-- 예약(선점/확정/만료 히스토리 포함)
 CREATE TABLE reservation (
-    id          BIGINT AUTO_INCREMENT PRIMARY KEY,
-    user_id     BIGINT       NOT NULL,
-    schedule_id BIGINT       NOT NULL,
-    seat_no     VARCHAR(20)  NOT NULL,
-    created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE KEY uk_reservation_schedule_seat (schedule_id, seat_no),
-    CONSTRAINT fk_reservation_user
-        FOREIGN KEY (user_id) REFERENCES user_account (id),
-    CONSTRAINT fk_reservation_schedule
-        FOREIGN KEY (schedule_id) REFERENCES schedule (id)
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    schedule_id BIGINT NOT NULL,
+    seat_no VARCHAR(20) NOT NULL,
+    
+    status VARCHAR(20) NOT NULL DEFAULT 'HELD',  -- HELD/CONFIRMED/EXPIRED/CANCELLED
+    expires_at DATETIME NULL,
+    updated_at DATETIME NULL,
+    active TINYINT NULL,                          -- 1=활성, NULL=비활성(만료/취소)
+    
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    
+    CONSTRAINT fk_reservation_user FOREIGN KEY (user_id) REFERENCES user_account(id),
+    CONSTRAINT fk_reservation_schedule FOREIGN KEY (schedule_id) REFERENCES schedule(id),
+
+    -- ✅ 활성 row만 유니크 보장
+    UNIQUE KEY ux_reservation_active (schedule_id, seat_no, active)
 );
 
--- 결제 주문 
+-- 결제 주문
 CREATE TABLE payment_order (
-    id           BIGINT AUTO_INCREMENT PRIMARY KEY,
-    user_id      BIGINT       NOT NULL,
-    schedule_id  BIGINT       NOT NULL,
-    seat_no      VARCHAR(20)  NOT NULL,
-    amount       INT          NOT NULL,
-    status       VARCHAR(20)  NOT NULL,   -- READY / PAID / CANCELLED / FAILED ...
-    order_no     VARCHAR(50)  NOT NULL,   -- 우리 시스템 내부 결제 주문 번호 (표시용)
-    fail_reason  VARCHAR(255) NULL,       -- 실패/취소 사유 (옵션)
-    created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at   DATETIME     NULL,
-    UNIQUE KEY uk_payment_order_no (order_no),
-    CONSTRAINT fk_payment_user
-        FOREIGN KEY (user_id)      REFERENCES user_account (id),
-    CONSTRAINT fk_payment_schedule
-        FOREIGN KEY (schedule_id)  REFERENCES schedule (id)
+   id BIGINT AUTO_INCREMENT PRIMARY KEY,
+   user_id BIGINT NOT NULL,
+   schedule_id BIGINT NOT NULL,
+   seat_no VARCHAR(20) NOT NULL,
+   amount INT NOT NULL,
+   status VARCHAR(20) NOT NULL,        -- READY/PAID/CANCELLED/FAILED
+   order_no VARCHAR(50) NOT NULL,
+   fail_reason VARCHAR(255) NULL,
+   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+   updated_at DATETIME NULL,
+
+   UNIQUE KEY uk_payment_order_no (order_no),
+   CONSTRAINT fk_payment_user FOREIGN KEY (user_id) REFERENCES user_account(id),
+   CONSTRAINT fk_payment_schedule FOREIGN KEY (schedule_id) REFERENCES schedule(id)
 );
 ```
 
