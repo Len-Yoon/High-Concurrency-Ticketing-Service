@@ -69,18 +69,21 @@ public class PaymentOrder {
 
     public void markPaid() {
         this.status = PaymentStatus.PAID;
-        this.updatedAt = LocalDateTime.now();
+        this.failReason = null; // 필드 있으면
     }
 
     public void markCancelled(String reason) {
         this.status = PaymentStatus.CANCELLED;
-        this.failReason = reason;
-        this.updatedAt = LocalDateTime.now();
+        this.failReason = reason; // 필드 있으면
     }
 
     public void markFailed(String reason) {
         this.status = PaymentStatus.FAILED;
         this.failReason = reason;
         this.updatedAt = LocalDateTime.now();
+    }
+
+    public void setUpdatedAt(LocalDateTime updatedAt) {
+        this.updatedAt = updatedAt;
     }
 }

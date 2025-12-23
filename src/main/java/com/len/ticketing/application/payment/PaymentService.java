@@ -5,10 +5,12 @@ import com.len.ticketing.common.exception.ErrorCode;
 import com.len.ticketing.domain.concert.Seat;
 import com.len.ticketing.domain.payment.PaymentOrder;
 import com.len.ticketing.domain.payment.PaymentStatus;
+import com.len.ticketing.domain.reservation.Reservation;
 import com.len.ticketing.domain.reservation.ReservationStatus;
 import com.len.ticketing.infra.concert.SeatJpaRepository;
 import com.len.ticketing.infra.payment.PaymentOrderJpaRepository;
 import com.len.ticketing.infra.reservation.ReservationJpaRepository;
+import com.len.ticketing.application.reservation.ReservationService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -23,51 +25,68 @@ public class PaymentService {
     private final SeatJpaRepository seatRepository;
     private final PaymentOrderJpaRepository paymentOrderRepository;
     private final ReservationJpaRepository reservationRepository;
-    private final com.len.ticketing.application.reservation.ReservationService reservationService;
+    private final ReservationService reservationService;
 
     @Transactional
     public PaymentReadyResult ready(Long userId, Long scheduleId, String seatNo) {
+        if (userId == null || scheduleId == null || seatNo == null || seatNo.isBlank()) {
+            throw new BusinessException(ErrorCode.INVALID_REQUEST);
+        }
+
         String sn = seatNo.trim().toUpperCase();
         LocalDateTime now = LocalDateTime.now();
 
+        // 1) 좌석 존재 확인
         Seat seat = seatRepository.findByScheduleIdAndSeatNo(scheduleId, sn)
                 .orElseThrow(() -> new BusinessException(ErrorCode.SEAT_NOT_FOUND));
 
-        var r = reservationRepository.findActiveForUpdate(scheduleId, sn)
-                .orElseThrow(() -> new BusinessException(ErrorCode.NOT_SEAT_OWNER));
+        // 2) DB 홀드(HELD, active=1, 만료 전) + 소유자 확인
+        Reservation r = reservationRepository.findActiveForUpdate(scheduleId, sn)
+                .orElseThrow(() -> new BusinessException(ErrorCode.HOLD_NOT_FOUND));
 
         if (!r.getUserId().equals(userId)) throw new BusinessException(ErrorCode.NOT_SEAT_OWNER);
-        if (r.getStatus() != ReservationStatus.HELD) throw new BusinessException(ErrorCode.NOT_SEAT_OWNER);
-        if (r.getExpiresAt() != null && r.getExpiresAt().isBefore(now)) {
-            r.expire(now);
-            throw new BusinessException(ErrorCode.NOT_SEAT_OWNER);
-        }
+        if (r.getStatus() != ReservationStatus.HELD) throw new BusinessException(ErrorCode.HOLD_NOT_FOUND);
+        if (r.getExpiresAt() != null && !r.getExpiresAt().isAfter(now)) throw new BusinessException(ErrorCode.HOLD_EXPIRED);
 
-        int amount = seat.getPrice();
+        // 3) 결제 주문 생성
         String orderNo = "PO-" + UUID.randomUUID();
+        PaymentOrder order = PaymentOrder.create(userId, scheduleId, sn, seat.getPrice(), orderNo);
+        paymentOrderRepository.save(order);
 
-        paymentOrderRepository.save(PaymentOrder.create(userId, scheduleId, sn, amount, orderNo));
-        return new PaymentReadyResult(orderNo, amount, "결제 준비가 완료되었습니다.");
+        return new PaymentReadyResult(orderNo, seat.getPrice(), "결제 준비 완료");
     }
 
     @Transactional
     public PaymentResult mockSuccess(String orderNo) {
+        if (orderNo == null || orderNo.isBlank()) {
+            throw new BusinessException(ErrorCode.INVALID_REQUEST);
+        }
+
         PaymentOrder order = paymentOrderRepository.findByOrderNo(orderNo)
-                .orElseThrow(() -> new IllegalArgumentException("주문이 존재하지 않습니다."));
+                .orElseThrow(() -> new BusinessException(ErrorCode.PAYMENT_ORDER_NOT_FOUND));
 
         if (order.getStatus() == PaymentStatus.PAID) {
-            return new PaymentResult(true, "이미 결제가 완료된 주문입니다.");
-        }
-        if (order.getStatus() == PaymentStatus.CANCELLED || order.getStatus() == PaymentStatus.FAILED) {
-            return new PaymentResult(false, "이미 취소되었거나 실패한 주문입니다.");
+            return new PaymentResult(true, "이미 결제 완료");
         }
 
-        order.markPaid();
+        try {
+            // 1) hold -> confirmed
+            reservationService.confirm(order.getUserId(), order.getScheduleId(), order.getSeatNo());
 
-        // ✅ 새 Reservation INSERT 하지 말고, 기존 HOLD를 CONFIRMED로 변경
-        reservationService.confirm(order.getUserId(), order.getScheduleId(), order.getSeatNo());
+            // 2) 결제 완료 처리
+            order.markPaid();
+            order.setUpdatedAt(LocalDateTime.now());
 
-        return new PaymentResult(true, "예매가 확정되었습니다.");
+            return new PaymentResult(true, "예매 확정 완료");
+        } catch (BusinessException e) {
+            order.markCancelled(e.getMessage());
+            order.setUpdatedAt(LocalDateTime.now());
+            return new PaymentResult(false, e.getMessage());
+        } catch (RuntimeException e) {
+            order.markCancelled(e.getMessage());
+            order.setUpdatedAt(LocalDateTime.now());
+            return new PaymentResult(false, "예매 확정 실패: " + e.getMessage());
+        }
     }
 
     public record PaymentReadyResult(String orderNo, int amount, String message) {}
