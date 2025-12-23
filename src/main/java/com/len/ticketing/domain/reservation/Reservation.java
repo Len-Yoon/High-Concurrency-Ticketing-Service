@@ -1,7 +1,9 @@
 package com.len.ticketing.domain.reservation;
 
 import jakarta.persistence.*;
-import lombok.*;
+import lombok.AccessLevel;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -15,29 +17,30 @@ public class Reservation {
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(name="user_id", nullable=false)
+    @Column(name = "user_id", nullable = false)
     private Long userId;
 
-    @Column(name="schedule_id", nullable=false)
+    @Column(name = "schedule_id", nullable = false)
     private Long scheduleId;
 
-    @Column(name="seat_no", nullable=false)
+    @Column(name = "seat_no", nullable = false, length = 20)
     private String seatNo;
 
     @Enumerated(EnumType.STRING)
-    @Column(name="status", nullable=false)
+    @Column(name = "status", nullable = false, length = 20)
     private ReservationStatus status;
 
-    @Column(name="expires_at")
+    // 1=active, 0=inactive
+    @Column(name = "active", nullable = false)
+    private Integer active;
+
+    @Column(name = "expires_at")
     private LocalDateTime expiresAt;
 
-    @Column(name="active")
-    private Integer active; // 1=활성, NULL=비활성
-
-    @Column(name="created_at", updatable=false)
+    @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 
-    @Column(name="updated_at")
+    @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
     public static Reservation newHold(Long userId, Long scheduleId, String seatNo,
@@ -45,10 +48,12 @@ public class Reservation {
         Reservation r = new Reservation();
         r.userId = userId;
         r.scheduleId = scheduleId;
-        r.seatNo = normalize(seatNo);
+        r.seatNo = seatNo;
+
         r.status = ReservationStatus.HELD;
+        r.active = 1;                 // ✅ 이거 없으면 findActiveForUpdate에 안 잡힘
         r.expiresAt = now.plus(ttl);
-        r.active = 1;            // ✅ 이거 없으면 active=NULL로 들어감
+
         r.createdAt = now;
         r.updatedAt = now;
         return r;
@@ -56,18 +61,20 @@ public class Reservation {
 
     public void confirm(LocalDateTime now) {
         this.status = ReservationStatus.CONFIRMED;
-        this.expiresAt = null;
-        this.active = 1;
         this.updatedAt = now;
+        // 보통 CONFIRMED는 active=1 그대로 둬도 됨
     }
 
     public void expire(LocalDateTime now) {
         this.status = ReservationStatus.EXPIRED;
-        this.active = null;
+        this.active = 0;              // ✅ null 말고 0으로 내림
         this.updatedAt = now;
     }
 
-    private static String normalize(String raw) {
-        return raw == null ? null : raw.trim().toUpperCase();
+    public boolean isValidHold(LocalDateTime now) {
+        return this.active == 1
+                && this.status == ReservationStatus.HELD
+                && this.expiresAt != null
+                && this.expiresAt.isAfter(now);
     }
 }

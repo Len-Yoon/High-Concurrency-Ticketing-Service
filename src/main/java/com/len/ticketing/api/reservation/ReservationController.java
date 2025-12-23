@@ -1,59 +1,34 @@
 package com.len.ticketing.api.reservation;
 
-import com.len.ticketing.api.reservation.dto.ReservationRequest;
-import com.len.ticketing.api.reservation.dto.ReservationResponse;
-import com.len.ticketing.application.reservation.ReservationService;
-import com.len.ticketing.infra.reservation.ReservationJpaRepository;
+import com.len.ticketing.application.ticket.TicketService;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import lombok.RequiredArgsConstructor;
-import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.List;
-
-@RequiredArgsConstructor
 @RestController
+@RequiredArgsConstructor
 @RequestMapping("/api/reservations")
 public class ReservationController {
 
-    private final ReservationJpaRepository reservationRepository;
-    private final ReservationService reservationService;
+    private final TicketService ticketService;
 
-    /**
-     * 특정 사용자(userId)의 예매 목록 조회
-     * GET /api/reservations?userId=101
-     */
-    @GetMapping
-    public List<ReservationResponse> getByUser(@RequestParam Long userId) {
-        return reservationRepository.findByUserId(userId).stream()
-                .map(reservation -> new ReservationResponse(
-                        reservation.getId(),
-                        reservation.getUserId(),
-                        reservation.getScheduleId(),
-                        reservation.getSeatNo(),
-                        reservation.getCreatedAt()
-                ))
-                .toList();
-    }
-
-    /**
-     * 좌석 홀드 / 예매 생성
-     * POST /api/reservations/hold
-     */
     @PostMapping("/hold")
-    @ResponseStatus(HttpStatus.CREATED)
-    public ReservationResponse hold(@RequestBody ReservationRequest request) {
-        var reservation = reservationService.hold(
-                request.userId(),
+    public HoldResponse hold(@Valid @RequestBody HoldRequest request) {
+        var result = ticketService.holdSeat(
                 request.scheduleId(),
-                request.seatNo()
+                request.seatNo(),
+                request.userId()
         );
-
-        return new ReservationResponse(
-                reservation.getId(),
-                reservation.getUserId(),
-                reservation.getScheduleId(),
-                reservation.getSeatNo(),
-                reservation.getCreatedAt()
-        );
+        return new HoldResponse(result.success(), result.message());
     }
+
+    public record HoldRequest(
+            @NotNull Long userId,
+            @NotNull Long scheduleId,
+            @NotBlank String seatNo
+    ) {}
+
+    public record HoldResponse(boolean success, String message) {}
 }

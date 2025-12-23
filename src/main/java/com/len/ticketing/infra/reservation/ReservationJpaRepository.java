@@ -41,13 +41,13 @@ public interface ReservationJpaRepository extends JpaRepository<Reservation, Lon
     // 만료 일괄 처리
     @Modifying
     @Query("""
-        update Reservation r
-           set r.status = com.len.ticketing.domain.reservation.ReservationStatus.EXPIRED,
-               r.active = null,
-               r.updatedAt = :now
-         where r.status = com.len.ticketing.domain.reservation.ReservationStatus.HELD
-           and r.active = 1
-           and r.expiresAt < :now
-    """)
+    update Reservation r
+       set r.status = com.len.ticketing.domain.reservation.ReservationStatus.EXPIRED,
+           r.active = 0,
+           r.updatedAt = :now
+     where r.status = com.len.ticketing.domain.reservation.ReservationStatus.HELD
+       and r.active = 1
+       and r.expiresAt < :now
+""")
     int expireAll(@Param("now") LocalDateTime now);
 }
