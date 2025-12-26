@@ -34,7 +34,7 @@ public class ConcertController {
     // 2) 공연 회차 목록
     @GetMapping("/concerts/{concertId}/schedules")
     public List<ScheduleResponse> getSchedules(@PathVariable Long concertId) {
-        return scheduleRepository.findByConcertIdOrderByShowAtAsc(concertId)
+        return scheduleRepository.findByConcert_IdOrderByShowAtAsc(concertId)
                 .stream()
                 .map(ScheduleResponse::from)
                 .toList();
@@ -43,7 +43,7 @@ public class ConcertController {
     // 3) 회차별 좌석 목록
     @GetMapping("/schedules/{scheduleId}/seats")
     public List<SeatResponse> getSeats(@PathVariable Long scheduleId) {
-        return seatRepository.findByScheduleIdOrderBySeatNoAsc(scheduleId)
+        return seatRepository.findBySchedule_IdOrderBySeatNoAsc(scheduleId)
                 .stream()
                 .map(SeatResponse::from)
                 .toList();

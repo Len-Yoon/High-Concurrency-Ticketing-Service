@@ -37,7 +37,7 @@ public class PaymentService {
         LocalDateTime now = LocalDateTime.now();
 
         // 1) 좌석 존재 확인
-        Seat seat = seatRepository.findByScheduleIdAndSeatNo(scheduleId, sn)
+        Seat seat = seatRepository.findBySchedule_IdAndSeatNo(scheduleId, sn)
                 .orElseThrow(() -> new BusinessException(ErrorCode.SEAT_NOT_FOUND));
 
         // 2) DB 홀드(HELD, active=1, 만료 전) + 소유자 확인
