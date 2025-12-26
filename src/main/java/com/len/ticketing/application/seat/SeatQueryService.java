@@ -27,7 +27,7 @@ public class SeatQueryService {
     public List<SeatStatusResponse> getSeatStatus(Long scheduleId) {
 
         // 1) 해당 스케줄의 전체 좌석 (좌석 번호 오름차순)
-        List<Seat> seats = seatRepository.findByScheduleIdOrderBySeatNoAsc(scheduleId);
+        List<Seat> seats = seatRepository.findBySchedule_IdOrderBySeatNoAsc(scheduleId);
 
         // 2) 해당 스케줄에서 이미 예매된 좌석 번호 목록
         List<String> reservedSeatNos =
