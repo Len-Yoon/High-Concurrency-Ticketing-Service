@@ -11,7 +11,22 @@ import java.time.LocalDateTime;
 @Getter
 @NoArgsConstructor(access = AccessLevel.PROTECTED)
 @Entity
-@Table(name = "reservation")
+@Table(
+        name = "reservation",
+        uniqueConstraints = {
+                // active=1(활성 row)만 유니크 보장
+                @UniqueConstraint(
+                        name = "ux_reservation_active",
+                        columnNames = {"schedule_id", "seat_no", "active"}
+                )
+        },
+        indexes = {
+                // findActiveForUpdate / 좌석조회용
+                @Index(name = "idx_reservation_schedule_seat_active", columnList = "schedule_id,seat_no,active"),
+                // 만료 스캔용
+                @Index(name = "idx_reservation_expire_scan", columnList = "status,active,expires_at")
+        }
+)
 public class Reservation {
 
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -68,6 +83,12 @@ public class Reservation {
     public void expire(LocalDateTime now) {
         this.status = ReservationStatus.EXPIRED;
         this.active = 0;              // ✅ null 말고 0으로 내림
+        this.updatedAt = now;
+    }
+
+    public void cancel(LocalDateTime now) {
+        this.status = ReservationStatus.CANCELLED;
+        this.active = 0;
         this.updatedAt = now;
     }
 
