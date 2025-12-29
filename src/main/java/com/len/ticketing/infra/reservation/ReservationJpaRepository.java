@@ -50,4 +50,22 @@ public interface ReservationJpaRepository extends JpaRepository<Reservation, Lon
        and r.expiresAt < :now
 """)
     int expireAll(@Param("now") LocalDateTime now);
+
+    /**
+     * ✅ 만료를 한 번에 너무 많이 처리하면(특히 부하 테스트) 인덱스 락이 커져서 insert와 데드락이 쉽게 난다.
+     * MySQL 한정으로 batch update를 제공한다.
+     */
+    @Modifying
+    @Query(value = """
+        UPDATE reservation
+           SET status = 'EXPIRED',
+               active = 0,
+               updated_at = :now
+         WHERE status = 'HELD'
+           AND active = 1
+           AND expires_at < :now
+         ORDER BY expires_at
+         LIMIT 1000
+        """, nativeQuery = true)
+    int expireBatch(@Param("now") LocalDateTime now);
 }
