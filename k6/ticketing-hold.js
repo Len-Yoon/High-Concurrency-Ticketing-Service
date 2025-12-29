@@ -3,10 +3,13 @@ import { check, sleep } from 'k6';
 import { Trend, Counter, Rate } from 'k6/metrics';
 import exec from 'k6/execution';
 
+// 409(좌석 이미 홀드됨)는 실패로 치지 않게 처리 (http_req_failed 개선)
+http.setResponseCallback(http.expectedStatuses({ min: 200, max: 299 }, 409));
+
 // =====================
 // ENV (k6: -e XXX=... / PowerShell: $env:XXX="...")
 // =====================
-const BASE_URL = ( __ENV.BASE_URL || 'http://localhost:8080' ).replace(/\/$/, '');
+const BASE_URL = (__ENV.BASE_URL || 'http://localhost:8080').replace(/\/$/, '');
 const SCHEDULE_ID = Number(__ENV.SCHEDULE_ID || '1');
 
 const VUS = Number(__ENV.VUS || '100');
@@ -90,68 +93,78 @@ const holdServerError = new Counter('hold_server_error');
 const holdOther = new Counter('hold_other');
 
 function isJson(res) {
-  const ct = res.headers && (res.headers['Content-Type'] || res.headers['content-type']);
-  return !!ct && String(ct).includes('application/json');
+    const ct = res.headers && (res.headers['Content-Type'] || res.headers['content-type']);
+    return !!ct && String(ct).includes('application/json');
 }
 
 function getErrorCode(res) {
-  if (!isJson(res)) return null;
-  try {
-    const body = JSON.parse(res.body);
-    return body && body.code ? String(body.code) : null;
-  } catch (_) {
-    return null;
-  }
+    if (!isJson(res)) return null;
+    try {
+        const body = JSON.parse(res.body);
+        return body && body.code ? String(body.code) : null;
+    } catch (_) {
+        return null;
+    }
+}
+
+// ✅ 2xx여도 서버가 { success:false }를 줄 수 있어서 비즈니스 성공 판별
+function getHoldBizSuccess(res) {
+    if (!isJson(res)) return true; // json 아니면 일단 성공 취급
+    try {
+        const body = JSON.parse(res.body);
+        if (body && typeof body.success === 'boolean') return body.success;
+    } catch (_) {}
+    return true; // success 필드가 없으면 성공 취급
 }
 
 function pickRandom(arr) {
-  if (!arr || arr.length === 0) return null;
-  return arr[Math.floor(Math.random() * arr.length)];
+    if (!arr || arr.length === 0) return null;
+    return arr[Math.floor(Math.random() * arr.length)];
 }
 
 function randomSeatByRange() {
-  const n = Math.floor(Math.random() * (SEAT_END - SEAT_START + 1)) + SEAT_START;
-  return `${SEAT_PREFIX}${SEAT_SEP}${n}`; // 예: A1, A-1 등
+    const n = Math.floor(Math.random() * (SEAT_END - SEAT_START + 1)) + SEAT_START;
+    return `${SEAT_PREFIX}${SEAT_SEP}${n}`; // 예: A1, A-1 등
 }
 
 function userIdForThisVU() {
-  // VUS가 USER_POOL보다 커도, userId는 1..USER_POOL로 순환
-  return ((exec.vu.idInTest - 1) % USER_POOL) + 1;
+    // VUS가 USER_POOL보다 커도, userId는 1..USER_POOL로 순환
+    return ((exec.vu.idInTest - 1) % USER_POOL) + 1;
 }
 
 function buildOptions() {
-  const thresholds = {
-    server_error_rate: ['rate==0'],
-    bad_request_rate: [`rate<${BAD_REQUEST_MAX}`],
-    ok_rate: [`rate>${OK_RATE_MIN}`],
-    hold_duration: [`p(95)<${HOLD_P95_MS}`],
-  };
-
-  if (SCENARIO === 'arrival') {
-    return {
-      thresholds,
-      scenarios: {
-        traffic: {
-          executor: 'ramping-arrival-rate',
-          startRate: START_RATE,
-          timeUnit: '1s',
-          preAllocatedVUs: PREALLOC_VUS,
-          maxVUs: MAX_VUS,
-          stages: [
-            { target: RATE1, duration: STAGE1 },
-            { target: RATE2, duration: STAGE2 },
-            { target: RATE3, duration: STAGE3 },
-          ],
-        },
-      },
+    const thresholds = {
+        server_error_rate: ['rate==0'],
+        bad_request_rate: [`rate<${BAD_REQUEST_MAX}`],
+        ok_rate: [`rate>${OK_RATE_MIN}`],
+        hold_duration: [`p(95)<${HOLD_P95_MS}`],
     };
-  }
 
-  return {
-    thresholds,
-    vus: VUS,
-    duration: DURATION,
-  };
+    if (SCENARIO === 'arrival') {
+        return {
+            thresholds,
+            scenarios: {
+                traffic: {
+                    executor: 'ramping-arrival-rate',
+                    startRate: START_RATE,
+                    timeUnit: '1s',
+                    preAllocatedVUs: PREALLOC_VUS,
+                    maxVUs: MAX_VUS,
+                    stages: [
+                        { target: RATE1, duration: STAGE1 },
+                        { target: RATE2, duration: STAGE2 },
+                        { target: RATE3, duration: STAGE3 },
+                    ],
+                },
+            },
+        };
+    }
+
+    return {
+        thresholds,
+        vus: VUS,
+        duration: DURATION,
+    };
 }
 
 export const options = buildOptions();
@@ -162,129 +175,138 @@ export const options = buildOptions();
 // 2) 대기열 사전 진입(권장)
 // =====================
 export function setup() {
-  let seatNos = [];
+    let seatNos = [];
 
-  if (USE_SEAT_LIST) {
-    const res = http.get(SEAT_LIST_URL, { tags: { endpoint: 'seat_list' } });
-    if (res.status === 200 && isJson(res)) {
-      try {
-        const arr = JSON.parse(res.body);
-        if (Array.isArray(arr)) {
-          seatNos = arr
-            .map((x) => (x && (x.seatNo || x.seat_no || x.seat)) ? String(x.seatNo || x.seat_no || x.seat) : null)
-            .filter((x) => !!x);
+    if (USE_SEAT_LIST) {
+        const res = http.get(SEAT_LIST_URL, { tags: { endpoint: 'seat_list' } });
+        if (res.status === 200 && isJson(res)) {
+            try {
+                const arr = JSON.parse(res.body);
+                if (Array.isArray(arr)) {
+                    seatNos = arr
+                        .map((x) => (x && (x.seatNo || x.seat_no || x.seat)) ? String(x.seatNo || x.seat_no || x.seat) : null)
+                        .filter((x) => !!x);
+                }
+            } catch (_) {
+                // ignore
+            }
         }
-      } catch (_) {
-        // ignore
-      }
     }
-  }
 
-  // 대기열은 Redis ZSET이라 테스트마다 누적됨.
-  // 기존 queue:{scheduleId}가 남아있으면 rank>100이 되어 QUEUE_NOT_ALLOWED(400) 튀기 쉬움.
-  // -> 가능하면 테스트 전에 Redis queue 키를 비우고(prefer), 여기서 1..USER_POOL만 미리 진입.
-  if (PRESEED_QUEUE) {
-    for (let uid = 1; uid <= USER_POOL; uid++) {
-      const payload = JSON.stringify({ scheduleId: SCHEDULE_ID, userId: uid });
-      const res = http.post(QUEUE_ENTER_URL, payload, {
-        headers: { 'Content-Type': 'application/json' },
-        tags: { endpoint: 'queue_enter' },
-      });
-      queueEnterDuration.add(res.timings.duration);
+    if (PRESEED_QUEUE) {
+        for (let uid = 1; uid <= USER_POOL; uid++) {
+            const payload = JSON.stringify({ scheduleId: SCHEDULE_ID, userId: uid });
+            const res = http.post(QUEUE_ENTER_URL, payload, {
+                headers: { 'Content-Type': 'application/json' },
+                tags: { endpoint: 'queue_enter' },
+            });
+            queueEnterDuration.add(res.timings.duration);
+        }
     }
-  }
 
-  return { seatNos };
+    return { seatNos };
 }
 
 // =====================
 // main
 // =====================
 export default function (data) {
-  const userId = userIdForThisVU();
+    const userId = userIdForThisVU();
 
-  // seat 결정
-  let seatNo = null;
+    // seat 결정
+    let seatNo = null;
 
-  if (MODE === 'race') {
-    seatNo = TARGET_SEAT;
-  } else if (MODE === 'available') {
-    const t0 = Date.now();
-    const res = http.get(AVAILABLE_SEAT_URL, { tags: { endpoint: 'seat_available' } });
-    seatFetchDuration.add(Date.now() - t0);
+    if (MODE === 'race') {
+        seatNo = TARGET_SEAT;
+    } else if (MODE === 'available') {
+        const t0 = Date.now();
+        const res = http.get(AVAILABLE_SEAT_URL, { tags: { endpoint: 'seat_available' } });
+        seatFetchDuration.add(Date.now() - t0);
 
-    if (res.status === 200 && isJson(res)) {
-      try {
-        const arr = JSON.parse(res.body);
-        if (Array.isArray(arr) && arr.length > 0) {
-          const picked = pickRandom(arr);
-          seatNo = picked.seatNo || picked.seat_no || picked.seat;
+        if (res.status === 200 && isJson(res)) {
+            try {
+                const arr = JSON.parse(res.body);
+                if (Array.isArray(arr) && arr.length > 0) {
+                    const picked = pickRandom(arr);
+                    seatNo = picked.seatNo || picked.seat_no || picked.seat;
+                }
+            } catch (_) {
+                // ignore
+            }
         }
-      } catch (_) {
-        // ignore
-      }
+
+        if (!seatNo) {
+            sleep(THINK_TIME);
+            return;
+        }
+    } else {
+        // random
+        seatNo = pickRandom(data && data.seatNos) || randomSeatByRange();
     }
 
-    if (!seatNo) {
-      // 잔여좌석이 없거나(혹은 조회 실패), 그냥 쉬고 다음 iter
-      sleep(THINK_TIME);
-      return;
-    }
-  } else {
-    // random
-    seatNo = pickRandom(data && data.seatNos) || randomSeatByRange();
-  }
-
-  const payload = JSON.stringify({ userId, scheduleId: SCHEDULE_ID, seatNo });
-  const res = http.post(HOLD_URL, payload, {
-    headers: { 'Content-Type': 'application/json' },
-    tags: { endpoint: 'hold' },
-  });
-
-  holdDuration.add(res.timings.duration);
-
-  // Rates
-  const ok = (res.status >= 200 && res.status < 300) || res.status === 409;
-  okRate.add(ok);
-  serverErrorRate.add(res.status >= 500);
-  badRequestRate.add(res.status >= 400 && res.status < 500 && res.status !== 409);
-
-  // Counters
-  const code = getErrorCode(res) || 'NO_CODE';
-
-  if (res.status >= 200 && res.status < 300) {
-    holdSuccess.add(1);
-
-    // 반복 테스트 유지용: 성공한 홀드는 바로 release해서 좌석/락 누적을 막는다.
-    if (RELEASE_AFTER) {
-      const r2 = http.post(RELEASE_URL, payload, {
+    const payload = JSON.stringify({ userId, scheduleId: SCHEDULE_ID, seatNo });
+    const res = http.post(HOLD_URL, payload, {
         headers: { 'Content-Type': 'application/json' },
-        tags: { endpoint: 'release' },
-      });
-      releaseDuration.add(r2.timings.duration);
-      check(r2, {
-        'release: status is 2xx': (r) => r.status >= 200 && r.status < 300,
-      });
-    }
-  } else if (res.status === 409) {
-    holdConflict.add(1, { code });
-  } else if (res.status === 404) {
-    holdNotFound.add(1, { code });
-  } else if (res.status >= 400 && res.status < 500) {
-    holdBadRequest.add(1, { code });
-  } else if (res.status >= 500) {
-    holdServerError.add(1, { code });
-    // 콘솔 스팸 방지: 초반 몇 건만 출력
-    if (exec.scenario.iterationInTest < 20) {
-      console.error(`5xx status=${res.status} code=${code} body=${res.body}`);
-    }
-  } else {
-    holdOther.add(1, { code });
-  }
+        tags: { endpoint: 'hold' },
+    });
 
-  check(res, {
-    'hold: status is 2xx or 409': (r) => (r.status >= 200 && r.status < 300) || r.status === 409,
-  });
+    holdDuration.add(res.timings.duration);
 
-  sleep(THINK_TIME);
+    // ✅ “HTTP 2xx” + “body.success=true” 일 때만 진짜 성공
+    const bizSuccess = (res.status >= 200 && res.status < 300) && getHoldBizSuccess(res);
+
+    // Rates
+    const ok = bizSuccess || res.status === 409;
+    okRate.add(ok);
+    serverErrorRate.add(res.status >= 500);
+    badRequestRate.add(res.status >= 400 && res.status < 500 && res.status !== 409);
+
+    // Counters
+    const code = getErrorCode(res) || 'NO_CODE';
+
+    if (bizSuccess) {
+        holdSuccess.add(1);
+
+        if (RELEASE_AFTER) {
+            const r2 = http.post(RELEASE_URL, payload, {
+                headers: { 'Content-Type': 'application/json' },
+                tags: { endpoint: 'release' },
+            });
+            releaseDuration.add(r2.timings.duration);
+
+            const okRelease = (r2.status >= 200 && r2.status < 300);
+            check(r2, { 'release: status is 2xx': () => okRelease });
+
+            // 원인 로그(초반만)
+            if (!okRelease && exec.scenario.iterationInTest < 20) {
+                console.error(`release fail status=${r2.status} body=${r2.body}`);
+            }
+        }
+    } else if (res.status === 409) {
+        holdConflict.add(1, { code });
+    } else if (res.status === 404) {
+        holdNotFound.add(1, { code });
+    } else if (res.status >= 200 && res.status < 300) {
+        // 200인데 success=false 같은 케이스
+        holdConflict.add(1, { code: 'HOLD_SUCCESS_FALSE' });
+
+        if (exec.scenario.iterationInTest < 20) {
+            console.error(`hold 2xx but success=false body=${res.body}`);
+        }
+    } else if (res.status >= 400 && res.status < 500) {
+        holdBadRequest.add(1, { code });
+    } else if (res.status >= 500) {
+        holdServerError.add(1, { code });
+        if (exec.scenario.iterationInTest < 20) {
+            console.error(`5xx status=${res.status} code=${code} body=${res.body}`);
+        }
+    } else {
+        holdOther.add(1, { code });
+    }
+
+    check(res, {
+        'hold: biz success or 409': () => ok,
+    });
+
+    sleep(THINK_TIME);
 }
