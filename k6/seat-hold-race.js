@@ -21,7 +21,8 @@ const unexpectedErrors = new Counter('unexpected_errors');
 
 function randomSeatNo() {
     const n = Math.floor(Math.random() * (SEAT_END - SEAT_START + 1)) + SEAT_START;
-    return `A-${n}`;
+    // seatNo는 "A1" 형태 (하이픈 없음)
+    return `A${n}`;
 }
 
 export default function () {
