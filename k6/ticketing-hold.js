@@ -3,7 +3,7 @@ import { check, sleep } from 'k6';
 import { Trend, Counter, Rate } from 'k6/metrics';
 import exec from 'k6/execution';
 
-// 409(좌석 이미 홀드됨)는 실패로 치지 않게 처리 (http_req_failed 개선)
+// 409(좌석 이미 락)도 expected로 처리해서 http_req_failed 개선
 http.setResponseCallback(http.expectedStatuses({ min: 200, max: 299 }, 409));
 
 // =====================
@@ -18,7 +18,7 @@ const DURATION = __ENV.DURATION || '30s';
 // constant-vus | arrival
 const SCENARIO = String(__ENV.SCENARIO || 'constant-vus').toLowerCase();
 
-// 사용자 풀(대기열 100 제한 때문에 기본 100)
+// 사용자 풀
 const USER_POOL = Number(__ENV.USER_POOL || String(Math.min(Math.max(VUS, 1), 100)));
 const PRESEED_QUEUE = String(__ENV.PRESEED_QUEUE || '1') === '1';
 
@@ -32,7 +32,7 @@ const SEAT_LIST_PATH = __ENV.SEAT_LIST_PATH || `/api/schedules/${SCHEDULE_ID}/se
 // available 모드에서만 사용
 const AVAILABLE_SEAT_PATH = __ENV.AVAILABLE_SEAT_PATH || `/api/seats/available?scheduleId=${SCHEDULE_ID}`;
 
-// range fallback
+// range fallback (seat list 없을 때만 의미 있음)
 const SEAT_PREFIX = __ENV.SEAT_PREFIX || 'A';
 const SEAT_SEP = (__ENV.SEAT_SEP !== undefined) ? String(__ENV.SEAT_SEP) : '';
 const SEAT_START = Number(__ENV.SEAT_START || '1');
@@ -53,21 +53,36 @@ const SEAT_LIST_URL = `${BASE_URL}${SEAT_LIST_PATH}`;
 const AVAILABLE_SEAT_URL = `${BASE_URL}${AVAILABLE_SEAT_PATH}`;
 
 const RELEASE_AFTER = String(__ENV.RELEASE_AFTER || '1') === '1';
+
+// ✅ 핵심: 2xx인데 success=false인 케이스도 정리용 release 시도
+const RELEASE_ON_BIZ_FAIL = String(__ENV.RELEASE_ON_BIZ_FAIL || '1') === '1';
+
+// seat pick 전략(충돌 줄이기)
+// - per-vu: 같은 userId는 같은 좌석부터 시도(성공이 한번이라도 나오게 만들기 좋음)
+// - random: 완전 랜덤
+const SEAT_PICK = String(__ENV.SEAT_PICK || 'per-vu').toLowerCase(); // per-vu | random
+
 const THINK_TIME = Number(__ENV.SLEEP || '0.2');
 
-// thresholds 튜닝
+// logs (초반만)
+const LOG_409 = Number(__ENV.LOG_409 || '10');
+const LOG_BIZFAIL = Number(__ENV.LOG_BIZFAIL || '10');
+const LOG_NETERR = Number(__ENV.LOG_NETERR || '10');
+
+// thresholds
 const HOLD_P95_MS = Number(__ENV.HOLD_P95_MS || '800');
 const OK_RATE_MIN = Number(__ENV.OK_RATE_MIN || '0.98');
 const BAD_REQUEST_MAX = Number(__ENV.BAD_REQUEST_MAX || '0.01');
 
-// 비즈니스 성공률 임계값은 기본 비활성(원하면 -e BIZ_SUCCESS_MIN=0.05 같은 식으로)
+// 비즈니스 성공률 임계값은 기본 비활성
 const BIZ_SUCCESS_MIN_RAW = __ENV.BIZ_SUCCESS_MIN;
-const BIZ_SUCCESS_MIN = (BIZ_SUCCESS_MIN_RAW !== undefined && BIZ_SUCCESS_MIN_RAW !== null && String(BIZ_SUCCESS_MIN_RAW).trim() !== '')
-    ? Number(BIZ_SUCCESS_MIN_RAW)
-    : null;
+const BIZ_SUCCESS_MIN =
+    (BIZ_SUCCESS_MIN_RAW !== undefined && BIZ_SUCCESS_MIN_RAW !== null && String(BIZ_SUCCESS_MIN_RAW).trim() !== '')
+        ? Number(BIZ_SUCCESS_MIN_RAW)
+        : null;
 
 // arrival scenario settings
-const START_RATE = Number(__ENV.START_RATE || '0'); // req/s
+const START_RATE = Number(__ENV.START_RATE || '0');
 const PREALLOC_VUS = Number(__ENV.PREALLOC_VUS || String(Math.max(VUS, USER_POOL)));
 const MAX_VUS = Number(__ENV.MAX_VUS || String(Math.max(PREALLOC_VUS * 5, PREALLOC_VUS)));
 const STAGE1 = __ENV.STAGE1 || '5s';
@@ -85,42 +100,45 @@ const releaseDuration = new Trend('release_duration');
 const seatFetchDuration = new Trend('seat_fetch_duration');
 const queueEnterDuration = new Trend('queue_enter_duration');
 
-const okRate = new Rate('ok_rate');                 // ✅ HTTP 정상(2xx/409) 비율
-const bizSuccessRate = new Rate('biz_success_rate'); // ✅ 진짜 성공(success=true) 비율
+const okRate = new Rate('ok_rate');                  // HTTP(2xx/409) OK
+const bizSuccessRate = new Rate('biz_success_rate'); // 2xx + success=true
 const serverErrorRate = new Rate('server_error_rate');
 const badRequestRate = new Rate('bad_request_rate');
+const networkErrorRate = new Rate('network_error_rate');
 
 const holdSuccess = new Counter('hold_success');
-const holdConflict = new Counter('hold_conflict');
-const holdBizFail = new Counter('hold_biz_fail'); // 2xx인데 success=false
-const holdBadRequest = new Counter('hold_bad_request');
-const holdNotFound = new Counter('hold_not_found');
-const holdServerError = new Counter('hold_server_error');
+const holdConflict = new Counter('hold_conflict');      // 409
+const holdBizFail = new Counter('hold_biz_fail');        // 2xx + success=false
+const holdBadRequest = new Counter('hold_bad_request');  // 4xx except 409
+const holdNotFound = new Counter('hold_not_found');      // 404
+const holdServerError = new Counter('hold_server_error');// 5xx
 const holdOther = new Counter('hold_other');
+
+const releaseAttempt = new Counter('release_attempt');
+const releaseOk = new Counter('release_ok');
+const releaseFail = new Counter('release_fail');
 
 function isJson(res) {
     const ct = res.headers && (res.headers['Content-Type'] || res.headers['content-type']);
     return !!ct && String(ct).includes('application/json');
 }
 
-function getErrorCode(res) {
+function safeJson(res) {
     if (!isJson(res)) return null;
-    try {
-        const body = JSON.parse(res.body);
-        return body && body.code ? String(body.code) : null;
-    } catch (_) {
-        return null;
-    }
+    try { return JSON.parse(res.body); } catch (_) { return null; }
 }
 
-// 2xx여도 서버가 { success:false }를 줄 수 있어서 비즈니스 성공 판별
+function getErrorCode(res) {
+    const body = safeJson(res);
+    return body && body.code ? String(body.code) : null;
+}
+
+// 2xx여도 {success:false}가 올 수 있음
 function getHoldBizSuccess(res) {
-    if (!isJson(res)) return true; // json 아니면 일단 성공 취급
-    try {
-        const body = JSON.parse(res.body);
-        if (body && typeof body.success === 'boolean') return body.success;
-    } catch (_) {}
-    return true; // success 필드가 없으면 성공 취급
+    const body = safeJson(res);
+    if (!body) return true; // json 아니면 일단 성공 취급
+    if (typeof body.success === 'boolean') return body.success;
+    return true;
 }
 
 function pickRandom(arr) {
@@ -137,14 +155,18 @@ function userIdForThisVU() {
     return ((exec.vu.idInTest - 1) % USER_POOL) + 1;
 }
 
+function vuIteration() {
+    // k6 버전마다 없을 수 있어 fallback
+    return (exec.vu && typeof exec.vu.iterationInScenario === 'number') ? exec.vu.iterationInScenario : 0;
+}
+
 function buildOptions() {
     const thresholds = {
         server_error_rate: ['rate==0'],
         bad_request_rate: [`rate<${BAD_REQUEST_MAX}`],
-        ok_rate: [`rate>${OK_RATE_MIN}`],           // ✅ HTTP 정상 비율 기준
+        ok_rate: [`rate>${OK_RATE_MIN}`],
         hold_duration: [`p(95)<${HOLD_P95_MS}`],
     };
-
     if (BIZ_SUCCESS_MIN !== null && !Number.isNaN(BIZ_SUCCESS_MIN)) {
         thresholds.biz_success_rate = [`rate>${BIZ_SUCCESS_MIN}`];
     }
@@ -169,11 +191,7 @@ function buildOptions() {
         };
     }
 
-    return {
-        thresholds,
-        vus: VUS,
-        duration: DURATION,
-    };
+    return { thresholds, vus: VUS, duration: DURATION };
 }
 
 export const options = buildOptions();
@@ -186,15 +204,11 @@ export function setup() {
 
     if (USE_SEAT_LIST) {
         const res = http.get(SEAT_LIST_URL, { tags: { endpoint: 'seat_list' } });
-        if (res.status === 200 && isJson(res)) {
-            try {
-                const arr = JSON.parse(res.body);
-                if (Array.isArray(arr)) {
-                    seatNos = arr
-                        .map((x) => (x && (x.seatNo || x.seat_no || x.seat)) ? String(x.seatNo || x.seat_no || x.seat) : null)
-                        .filter((x) => !!x);
-                }
-            } catch (_) {}
+        const arr = safeJson(res);
+        if (res.status === 200 && Array.isArray(arr)) {
+            seatNos = arr
+                .map((x) => (x && (x.seatNo || x.seat_no || x.seat)) ? String(x.seatNo || x.seat_no || x.seat) : null)
+                .filter((x) => !!x);
         }
     }
 
@@ -209,7 +223,30 @@ export function setup() {
         }
     }
 
+    // seat list 크기 힌트 (SEAT_END는 seat list 쓰면 의미 거의 없음)
+    if (exec.vu.idInTest === 1) {
+        console.log(`setup: seatNos=${seatNos.length} (USE_SEAT_LIST=${USE_SEAT_LIST})`);
+    }
+
     return { seatNos };
+}
+
+function doRelease(payload, userId, seatNo, reason) {
+    releaseAttempt.add(1);
+    const r2 = http.post(RELEASE_URL, payload, {
+        headers: { 'Content-Type': 'application/json' },
+        tags: { endpoint: 'release' },
+    });
+    releaseDuration.add(r2.timings.duration);
+
+    const ok = (r2.status >= 200 && r2.status < 300);
+    if (ok) releaseOk.add(1);
+    else releaseFail.add(1);
+
+    if (!ok && exec.scenario.iterationInTest < 20) {
+        console.warn(`release fail(${reason}) user=${userId} seat=${seatNo} status=${r2.status} body=${r2.body}`);
+    }
+    return ok;
 }
 
 // =====================
@@ -228,14 +265,10 @@ export default function (data) {
         const res = http.get(AVAILABLE_SEAT_URL, { tags: { endpoint: 'seat_available' } });
         seatFetchDuration.add(Date.now() - t0);
 
-        if (res.status === 200 && isJson(res)) {
-            try {
-                const arr = JSON.parse(res.body);
-                if (Array.isArray(arr) && arr.length > 0) {
-                    const picked = pickRandom(arr);
-                    seatNo = picked.seatNo || picked.seat_no || picked.seat;
-                }
-            } catch (_) {}
+        const arr = safeJson(res);
+        if (res.status === 200 && Array.isArray(arr) && arr.length > 0) {
+            const picked = pickRandom(arr);
+            seatNo = picked && (picked.seatNo || picked.seat_no || picked.seat);
         }
 
         if (!seatNo) {
@@ -243,7 +276,18 @@ export default function (data) {
             return;
         }
     } else {
-        seatNo = pickRandom(data && data.seatNos) || randomSeatByRange();
+        // random
+        const seats = (data && data.seatNos) ? data.seatNos : [];
+        if (seats.length > 0) {
+            if (SEAT_PICK === 'per-vu') {
+                const idx = (userId - 1 + vuIteration()) % seats.length;
+                seatNo = seats[idx];
+            } else {
+                seatNo = pickRandom(seats);
+            }
+        } else {
+            seatNo = randomSeatByRange();
+        }
     }
 
     const payload = JSON.stringify({ userId, scheduleId: SCHEDULE_ID, seatNo });
@@ -252,15 +296,28 @@ export default function (data) {
         tags: { endpoint: 'hold' },
     });
 
+    // 네트워크 에러(서버 다운 등)
+    if (res.status === 0) {
+        networkErrorRate.add(true);
+        okRate.add(false);
+        bizSuccessRate.add(false);
+        if (exec.scenario.iterationInTest < LOG_NETERR) {
+            console.warn(`network error user=${userId} seat=${seatNo} err=${res.error || 'unknown'}`);
+        }
+        sleep(THINK_TIME);
+        return;
+    } else {
+        networkErrorRate.add(false);
+    }
+
     holdDuration.add(res.timings.duration);
 
     const is2xx = (res.status >= 200 && res.status < 300);
     const bizSuccess = is2xx && getHoldBizSuccess(res);
     const httpOk = is2xx || res.status === 409;
 
-    // Rates
-    okRate.add(httpOk);                 // ✅ 2xx/409면 ok
-    bizSuccessRate.add(bizSuccess);     // ✅ success=true만 별도 기록
+    okRate.add(httpOk);
+    bizSuccessRate.add(bizSuccess);
     serverErrorRate.add(res.status >= 500);
     badRequestRate.add(res.status >= 400 && res.status < 500 && res.status !== 409);
 
@@ -270,42 +327,44 @@ export default function (data) {
         holdSuccess.add(1);
 
         if (RELEASE_AFTER) {
-            const r2 = http.post(RELEASE_URL, payload, {
-                headers: { 'Content-Type': 'application/json' },
-                tags: { endpoint: 'release' },
-            });
-            releaseDuration.add(r2.timings.duration);
-
-            const okRelease = (r2.status >= 200 && r2.status < 300);
-            check(r2, { 'release: status is 2xx': () => okRelease });
-
-            if (!okRelease && exec.scenario.iterationInTest < 20) {
-                console.error(`release fail user=${userId} seat=${seatNo} status=${r2.status} body=${r2.body}`);
-            }
+            doRelease(payload, userId, seatNo, 'after_success');
         }
+
     } else if (res.status === 409) {
         holdConflict.add(1, { code });
+
+        if (exec.scenario.iterationInTest < LOG_409) {
+            console.log(`409 user=${userId} seat=${seatNo} code=${code} body=${res.body}`);
+        }
+
     } else if (is2xx && !bizSuccess) {
-        // 200인데 success=false 같은 케이스
         holdBizFail.add(1, { code: 'HOLD_SUCCESS_FALSE' });
 
-        if (exec.scenario.iterationInTest < 20) {
-            console.warn(`hold 2xx but success=false user=${userId} seat=${seatNo} body=${res.body}`);
+        if (exec.scenario.iterationInTest < LOG_BIZFAIL) {
+            console.warn(`2xx success=false user=${userId} seat=${seatNo} body=${res.body}`);
         }
+
+        // ✅ 핵심: 성공=false여도 혹시 "내 락"이 남아있을 수 있어서 정리 시도
+        if (RELEASE_ON_BIZ_FAIL) {
+            doRelease(payload, userId, seatNo, 'biz_fail_cleanup');
+        }
+
     } else if (res.status === 404) {
         holdNotFound.add(1, { code });
+
     } else if (res.status >= 400 && res.status < 500) {
         holdBadRequest.add(1, { code });
+
     } else if (res.status >= 500) {
         holdServerError.add(1, { code });
         if (exec.scenario.iterationInTest < 20) {
             console.error(`5xx user=${userId} seat=${seatNo} status=${res.status} code=${code} body=${res.body}`);
         }
+
     } else {
         holdOther.add(1, { code });
     }
 
-    // ✅ 체크도 HTTP 기준으로 통과
     check(res, {
         'hold: status is 2xx or 409': () => httpOk,
     });
