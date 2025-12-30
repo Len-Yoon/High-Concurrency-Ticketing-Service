@@ -7,7 +7,7 @@ import exec from 'k6/execution';
 http.setResponseCallback(http.expectedStatuses({ min: 200, max: 299 }, 409));
 
 // =====================
-// ENV (k6: -e XXX=... / PowerShell: $env:XXX="...")
+// ENV
 // =====================
 const BASE_URL = (__ENV.BASE_URL || 'http://localhost:8080').replace(/\/$/, '');
 const SCHEDULE_ID = Number(__ENV.SCHEDULE_ID || '1');
@@ -26,12 +26,10 @@ const PRESEED_QUEUE = String(__ENV.PRESEED_QUEUE || '1') === '1';
 const MODE = String(__ENV.MODE || 'random').toLowerCase();
 
 // 좌석 소스
-//  - USE_SEAT_LIST=1: /api/schedules/{id}/seats에서 seatNo 자동 수집(추천)
-//  - 실패 시 range 기반 fallback
 const USE_SEAT_LIST = String(__ENV.USE_SEAT_LIST || '1') === '1';
 const SEAT_LIST_PATH = __ENV.SEAT_LIST_PATH || `/api/schedules/${SCHEDULE_ID}/seats`;
 
-// available 모드에서만 사용(매 iter 잔여좌석 조회)
+// available 모드에서만 사용
 const AVAILABLE_SEAT_PATH = __ENV.AVAILABLE_SEAT_PATH || `/api/seats/available?scheduleId=${SCHEDULE_ID}`;
 
 // range fallback
@@ -44,7 +42,7 @@ const SEAT_END = Number(__ENV.SEAT_END || '50');
 const TARGET_SEAT = __ENV.TARGET_SEAT || `${SEAT_PREFIX}${SEAT_SEP}${SEAT_START}`;
 
 // 엔드포인트
-const HOLD_PATH = __ENV.HOLD_PATH || '/api/tickets/hold'; // 또는 /api/reservations/hold
+const HOLD_PATH = __ENV.HOLD_PATH || '/api/tickets/hold';
 const RELEASE_PATH = __ENV.RELEASE_PATH || '/api/tickets/release';
 const QUEUE_ENTER_PATH = __ENV.QUEUE_ENTER_PATH || '/api/queue/enter';
 
@@ -61,6 +59,12 @@ const THINK_TIME = Number(__ENV.SLEEP || '0.2');
 const HOLD_P95_MS = Number(__ENV.HOLD_P95_MS || '800');
 const OK_RATE_MIN = Number(__ENV.OK_RATE_MIN || '0.98');
 const BAD_REQUEST_MAX = Number(__ENV.BAD_REQUEST_MAX || '0.01');
+
+// 비즈니스 성공률 임계값은 기본 비활성(원하면 -e BIZ_SUCCESS_MIN=0.05 같은 식으로)
+const BIZ_SUCCESS_MIN_RAW = __ENV.BIZ_SUCCESS_MIN;
+const BIZ_SUCCESS_MIN = (BIZ_SUCCESS_MIN_RAW !== undefined && BIZ_SUCCESS_MIN_RAW !== null && String(BIZ_SUCCESS_MIN_RAW).trim() !== '')
+    ? Number(BIZ_SUCCESS_MIN_RAW)
+    : null;
 
 // arrival scenario settings
 const START_RATE = Number(__ENV.START_RATE || '0'); // req/s
@@ -81,12 +85,14 @@ const releaseDuration = new Trend('release_duration');
 const seatFetchDuration = new Trend('seat_fetch_duration');
 const queueEnterDuration = new Trend('queue_enter_duration');
 
-const okRate = new Rate('ok_rate');
+const okRate = new Rate('ok_rate');                 // ✅ HTTP 정상(2xx/409) 비율
+const bizSuccessRate = new Rate('biz_success_rate'); // ✅ 진짜 성공(success=true) 비율
 const serverErrorRate = new Rate('server_error_rate');
 const badRequestRate = new Rate('bad_request_rate');
 
 const holdSuccess = new Counter('hold_success');
 const holdConflict = new Counter('hold_conflict');
+const holdBizFail = new Counter('hold_biz_fail'); // 2xx인데 success=false
 const holdBadRequest = new Counter('hold_bad_request');
 const holdNotFound = new Counter('hold_not_found');
 const holdServerError = new Counter('hold_server_error');
@@ -107,7 +113,7 @@ function getErrorCode(res) {
     }
 }
 
-// ✅ 2xx여도 서버가 { success:false }를 줄 수 있어서 비즈니스 성공 판별
+// 2xx여도 서버가 { success:false }를 줄 수 있어서 비즈니스 성공 판별
 function getHoldBizSuccess(res) {
     if (!isJson(res)) return true; // json 아니면 일단 성공 취급
     try {
@@ -124,11 +130,10 @@ function pickRandom(arr) {
 
 function randomSeatByRange() {
     const n = Math.floor(Math.random() * (SEAT_END - SEAT_START + 1)) + SEAT_START;
-    return `${SEAT_PREFIX}${SEAT_SEP}${n}`; // 예: A1, A-1 등
+    return `${SEAT_PREFIX}${SEAT_SEP}${n}`;
 }
 
 function userIdForThisVU() {
-    // VUS가 USER_POOL보다 커도, userId는 1..USER_POOL로 순환
     return ((exec.vu.idInTest - 1) % USER_POOL) + 1;
 }
 
@@ -136,9 +141,13 @@ function buildOptions() {
     const thresholds = {
         server_error_rate: ['rate==0'],
         bad_request_rate: [`rate<${BAD_REQUEST_MAX}`],
-        ok_rate: [`rate>${OK_RATE_MIN}`],
+        ok_rate: [`rate>${OK_RATE_MIN}`],           // ✅ HTTP 정상 비율 기준
         hold_duration: [`p(95)<${HOLD_P95_MS}`],
     };
+
+    if (BIZ_SUCCESS_MIN !== null && !Number.isNaN(BIZ_SUCCESS_MIN)) {
+        thresholds.biz_success_rate = [`rate>${BIZ_SUCCESS_MIN}`];
+    }
 
     if (SCENARIO === 'arrival') {
         return {
@@ -170,9 +179,7 @@ function buildOptions() {
 export const options = buildOptions();
 
 // =====================
-// setup():
-// 1) 좌석번호 자동 수집(가능하면)
-// 2) 대기열 사전 진입(권장)
+// setup()
 // =====================
 export function setup() {
     let seatNos = [];
@@ -187,9 +194,7 @@ export function setup() {
                         .map((x) => (x && (x.seatNo || x.seat_no || x.seat)) ? String(x.seatNo || x.seat_no || x.seat) : null)
                         .filter((x) => !!x);
                 }
-            } catch (_) {
-                // ignore
-            }
+            } catch (_) {}
         }
     }
 
@@ -230,9 +235,7 @@ export default function (data) {
                     const picked = pickRandom(arr);
                     seatNo = picked.seatNo || picked.seat_no || picked.seat;
                 }
-            } catch (_) {
-                // ignore
-            }
+            } catch (_) {}
         }
 
         if (!seatNo) {
@@ -240,7 +243,6 @@ export default function (data) {
             return;
         }
     } else {
-        // random
         seatNo = pickRandom(data && data.seatNos) || randomSeatByRange();
     }
 
@@ -252,16 +254,16 @@ export default function (data) {
 
     holdDuration.add(res.timings.duration);
 
-    // ✅ “HTTP 2xx” + “body.success=true” 일 때만 진짜 성공
-    const bizSuccess = (res.status >= 200 && res.status < 300) && getHoldBizSuccess(res);
+    const is2xx = (res.status >= 200 && res.status < 300);
+    const bizSuccess = is2xx && getHoldBizSuccess(res);
+    const httpOk = is2xx || res.status === 409;
 
     // Rates
-    const ok = bizSuccess || res.status === 409;
-    okRate.add(ok);
+    okRate.add(httpOk);                 // ✅ 2xx/409면 ok
+    bizSuccessRate.add(bizSuccess);     // ✅ success=true만 별도 기록
     serverErrorRate.add(res.status >= 500);
     badRequestRate.add(res.status >= 400 && res.status < 500 && res.status !== 409);
 
-    // Counters
     const code = getErrorCode(res) || 'NO_CODE';
 
     if (bizSuccess) {
@@ -277,35 +279,35 @@ export default function (data) {
             const okRelease = (r2.status >= 200 && r2.status < 300);
             check(r2, { 'release: status is 2xx': () => okRelease });
 
-            // 원인 로그(초반만)
             if (!okRelease && exec.scenario.iterationInTest < 20) {
-                console.error(`release fail status=${r2.status} body=${r2.body}`);
+                console.error(`release fail user=${userId} seat=${seatNo} status=${r2.status} body=${r2.body}`);
             }
         }
     } else if (res.status === 409) {
         holdConflict.add(1, { code });
-    } else if (res.status === 404) {
-        holdNotFound.add(1, { code });
-    } else if (res.status >= 200 && res.status < 300) {
+    } else if (is2xx && !bizSuccess) {
         // 200인데 success=false 같은 케이스
-        holdConflict.add(1, { code: 'HOLD_SUCCESS_FALSE' });
+        holdBizFail.add(1, { code: 'HOLD_SUCCESS_FALSE' });
 
         if (exec.scenario.iterationInTest < 20) {
-            console.error(`hold 2xx but success=false body=${res.body}`);
+            console.warn(`hold 2xx but success=false user=${userId} seat=${seatNo} body=${res.body}`);
         }
+    } else if (res.status === 404) {
+        holdNotFound.add(1, { code });
     } else if (res.status >= 400 && res.status < 500) {
         holdBadRequest.add(1, { code });
     } else if (res.status >= 500) {
         holdServerError.add(1, { code });
         if (exec.scenario.iterationInTest < 20) {
-            console.error(`5xx status=${res.status} code=${code} body=${res.body}`);
+            console.error(`5xx user=${userId} seat=${seatNo} status=${res.status} code=${code} body=${res.body}`);
         }
     } else {
         holdOther.add(1, { code });
     }
 
+    // ✅ 체크도 HTTP 기준으로 통과
     check(res, {
-        'hold: biz success or 409': () => ok,
+        'hold: status is 2xx or 409': () => httpOk,
     });
 
     sleep(THINK_TIME);
