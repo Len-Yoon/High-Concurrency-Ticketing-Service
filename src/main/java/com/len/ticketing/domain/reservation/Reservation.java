@@ -13,17 +13,8 @@ import java.time.LocalDateTime;
 @Entity
 @Table(
         name = "reservation",
-        uniqueConstraints = {
-                // active=1(활성 row)만 유니크 보장
-                @UniqueConstraint(
-                        name = "ux_reservation_active",
-                        columnNames = {"schedule_id", "seat_no", "active"}
-                )
-        },
         indexes = {
-                // findActiveForUpdate / 좌석조회용
                 @Index(name = "idx_reservation_schedule_seat_active", columnList = "schedule_id,seat_no,active"),
-                // 만료 스캔용
                 @Index(name = "idx_reservation_expire_scan", columnList = "status,active,expires_at")
         }
 )
