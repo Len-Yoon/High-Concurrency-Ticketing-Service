@@ -17,6 +17,6 @@ public class SeatSseController {
 
     @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter stream(@RequestParam long scheduleId) {
-        return hub.register(scheduleId);
+        return hub.subscribe(scheduleId); // ✅ 여기만 수정
     }
 }
