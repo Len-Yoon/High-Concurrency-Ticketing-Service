@@ -62,12 +62,12 @@ export default function App() {
     }
 
     function applySeatChange(evt: SeatChangedEvent) {
-        const changedNo = String(evt.seatNo ?? "");
+        const changedNo = String(evt.seatNo ?? "").trim().toUpperCase();
         if (!changedNo) return;
 
         setSeats((prev) =>
             prev.map((s) => {
-                const no = getSeatNo(s);
+                const no = getSeatNo(s).trim().toUpperCase();
                 if (no !== changedNo) return s;
                 return setReserved(s, Boolean(evt.reserved));
             })
@@ -85,28 +85,42 @@ export default function App() {
         const url = `/api/seats/stream?scheduleId=${scheduleId}`;
         const es = new EventSource(url);
 
+        let refreshTimer: number | null = null;
+
         es.addEventListener("seat", (ev: MessageEvent) => {
             try {
                 const data: SeatChangedEvent = JSON.parse(ev.data);
+                // scheduleId 방어
+                if (Number(data.scheduleId) !== Number(scheduleId)) return;
                 applySeatChange(data);
             } catch {
                 // ignore
             }
         });
 
-        // (선택) 서버 keepAlive ping
         es.addEventListener("ping", () => {});
+        es.addEventListener("hello", () => {});
 
-        // (선택) SSE 오류 나면 1회 전체 refresh로 복구
+        es.onopen = () => {
+            // 연결 복구되면 1회 refresh(선택)
+            // refresh();
+        };
+
         es.onerror = () => {
-            // 연결이 끊겼을 때 화면이 오래 stale 되는 걸 방지
-            refresh();
+            // 끊김/재연결 과정에서 onerror 연속 호출될 수 있음 -> 1회만 refresh
+            if (refreshTimer == null) {
+                refreshTimer = window.setTimeout(() => {
+                    refresh();
+                    refreshTimer = null;
+                }, 300);
+            }
         };
 
         return () => {
+            if (refreshTimer != null) window.clearTimeout(refreshTimer);
             es.close();
         };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [scheduleId]);
 
     async function hold(seatNo: string) {
