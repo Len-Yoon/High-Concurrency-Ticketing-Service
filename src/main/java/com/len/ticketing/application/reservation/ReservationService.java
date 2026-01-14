@@ -33,43 +33,43 @@ public class ReservationService {
         String sn = seatNo.trim().toUpperCase();
         LocalDateTime now = LocalDateTime.now();
 
-        // 좌석 존재 확인
         if (!seatRepository.existsBySchedule_IdAndSeatNo(scheduleId, sn)) {
             throw new BusinessException(ErrorCode.SEAT_NOT_FOUND);
         }
 
-        // ✅ 1) 일단 INSERT 먼저 (유니크가 동시성 보장)
+        // ✅ 1) INSERT 먼저 (유니크 인덱스가 동시성의 단일 진실)
         try {
             Reservation hold = Reservation.newHold(userId, scheduleId, sn, now, HOLD_TTL);
             return reservationRepository.saveAndFlush(hold);
         } catch (DataIntegrityViolationException e) {
-            // ✅ 2) 충돌이면 현재 active row를 조회해서 판단
+
+            // ✅ 2) 충돌이면 현재 active 상태를 보고 분기
             var cur = reservationRepository.findActiveLite(scheduleId, sn);
 
             if (cur == null) {
-                // 아주 짧은 타이밍에 상태 바뀐 케이스 -> 한번만 재시도
+                // 아주 짧은 타이밍 레이스 -> 1회만 재시도
                 Reservation hold = Reservation.newHold(userId, scheduleId, sn, now, HOLD_TTL);
                 return reservationRepository.saveAndFlush(hold);
             }
 
-            // CONFIRMED면 끝
             if ("CONFIRMED".equals(cur.getStatus())) {
                 throw new BusinessException(ErrorCode.ALREADY_RESERVED);
             }
 
-            // HELD인데 만료면 -> 내가 만료처리하고 1회 재시도
-            if ("HELD".equals(cur.getStatus()) && cur.getExpiresAt() != null && cur.getExpiresAt().isBefore(now)) {
-                int expired = reservationRepository.expireIfExpired(scheduleId, sn, now);
-                if (expired > 0) {
+            // 만료 HELD면 내가 정리하고 1회 재시도
+            if ("HELD".equals(cur.getStatus())
+                    && cur.getExpiresAt() != null
+                    && cur.getExpiresAt().isBefore(now)) {
+
+                int fixed = reservationRepository.expireIfExpired(scheduleId, sn, now);
+                if (fixed > 0) {
                     Reservation hold = Reservation.newHold(userId, scheduleId, sn, now, HOLD_TTL);
                     return reservationRepository.saveAndFlush(hold);
                 }
             }
 
-            // ✅ 같은 유저가 이미 잡은 거면 멱등 성공 처리(선택)
+            // 같은 유저가 이미 잡은 거면 멱등 처리(선택)
             if (cur.getUserId() != null && cur.getUserId().equals(userId)) {
-                // 이미 내가 잡은 상태면 그냥 성공으로 봐도 됨
-                // 필요하면 existing 엔티티를 다시 조회해서 반환하도록 바꿔도 됨
                 return reservationRepository.findById(cur.getId())
                         .orElseThrow(() -> new BusinessException(ErrorCode.ALREADY_HELD));
             }

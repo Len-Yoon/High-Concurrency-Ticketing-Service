@@ -73,79 +73,60 @@ public interface ReservationJpaRepository extends JpaRepository<Reservation, Lon
         """, nativeQuery = true)
     int expireBatch(@Param("now") LocalDateTime now);
 
-    // ============================================================
-    // ✅ 추가(핵심): "유니크 충돌 처리"를 위해 active row를 가볍게 조회
-    // ============================================================
+    // ===== 추가: active row 가볍게 조회 (native) =====
     interface ActiveLite {
         Long getId();
         Long getUserId();
-        String getStatus();          // DB enum('HELD','CONFIRMED'...) 그대로 문자열로 받는게 안전
+        String getStatus();
         LocalDateTime getExpiresAt();
     }
 
     @Query(value = """
-        SELECT id         AS id,
-               user_id    AS userId,
-               status     AS status,
-               expires_at AS expiresAt
-          FROM reservation
-         WHERE schedule_id = :scheduleId
-           AND seat_no = :seatNo
-           AND active = 1
-         LIMIT 1
-        """, nativeQuery = true)
+    SELECT id         AS id,
+           user_id    AS userId,
+           status     AS status,
+           expires_at AS expiresAt
+      FROM reservation
+     WHERE schedule_id = :scheduleId
+       AND seat_no = :seatNo
+       AND active = 1
+     LIMIT 1
+    """, nativeQuery = true)
     ActiveLite findActiveLite(@Param("scheduleId") Long scheduleId,
                               @Param("seatNo") String seatNo);
 
-    // ============================================================
-    // ✅ 추가(핵심): 만료된 HELD를 active=0으로 내려 유니크(active_uk) 해제
-    // - hold 충돌(DataIntegrityViolation) 났을 때 "만료면 정리하고 1회 재시도"에 쓰려고 추가
-    // ============================================================
     @Modifying(flushAutomatically = true, clearAutomatically = true)
     @Query(value = """
-        UPDATE reservation
-           SET status = 'EXPIRED',
-               active = 0,
-               updated_at = NOW(6)
-         WHERE schedule_id = :scheduleId
-           AND seat_no = :seatNo
-           AND active = 1
-           AND status = 'HELD'
-           AND expires_at < :now
-        """, nativeQuery = true)
+    UPDATE reservation
+       SET status = 'EXPIRED',
+           active = 0,
+           updated_at = :now
+     WHERE schedule_id = :scheduleId
+       AND seat_no = :seatNo
+       AND active = 1
+       AND status = 'HELD'
+       AND expires_at < :now
+    """, nativeQuery = true)
     int expireIfExpired(@Param("scheduleId") Long scheduleId,
                         @Param("seatNo") String seatNo,
                         @Param("now") LocalDateTime now);
 
-    // ============================================================
-    // ✅ 추가: release(취소)용 - INSERT 절대 금지, UPDATE만
-    // ============================================================
     @Modifying(flushAutomatically = true, clearAutomatically = true)
     @Query(value = """
-        UPDATE reservation
-           SET active = 0,
-               status = 'CANCELLED',
-               expires_at = NULL,
-               updated_at = NOW(6)
-         WHERE user_id = :userId
-           AND schedule_id = :scheduleId
-           AND seat_no = :seatNo
-           AND active = 1
-           AND status = 'HELD'
-        """, nativeQuery = true)
+    UPDATE reservation
+       SET status = 'CANCELLED',
+           active = 0,
+           expires_at = NULL,
+           updated_at = :now
+     WHERE user_id = :userId
+       AND schedule_id = :scheduleId
+       AND seat_no = :seatNo
+       AND active = 1
+       AND status = 'HELD'
+    """, nativeQuery = true)
     int cancelHold(@Param("userId") Long userId,
                    @Param("scheduleId") Long scheduleId,
-                   @Param("seatNo") String seatNo);
+                   @Param("seatNo") String seatNo,
+                   @Param("now") LocalDateTime now);
 
-    // (선택) 멱등 처리용: 누가 active를 잡고 있는지
-    @Query(value = """
-        SELECT user_id
-          FROM reservation
-         WHERE schedule_id = :scheduleId
-           AND seat_no = :seatNo
-           AND active = 1
-         LIMIT 1
-        """, nativeQuery = true)
-    Long findActiveOwner(@Param("scheduleId") Long scheduleId,
-                         @Param("seatNo") String seatNo);
 }
