@@ -34,39 +34,50 @@ public class ReservationService {
         LocalDateTime now = LocalDateTime.now();
 
         // 좌석 존재 확인
-        boolean seatExists = seatRepository.existsBySchedule_IdAndSeatNo(scheduleId, sn);
-        if (!seatExists) {
+        if (!seatRepository.existsBySchedule_IdAndSeatNo(scheduleId, sn)) {
             throw new BusinessException(ErrorCode.SEAT_NOT_FOUND);
         }
 
-        // active=1 row 락 조회
-        var existingOpt = reservationRepository.findActiveForUpdate(scheduleId, sn);
-        if (existingOpt.isPresent()) {
-            var existing = existingOpt.get();
+        // ✅ 1) 일단 INSERT 먼저 (유니크가 동시성 보장)
+        try {
+            Reservation hold = Reservation.newHold(userId, scheduleId, sn, now, HOLD_TTL);
+            return reservationRepository.saveAndFlush(hold);
+        } catch (DataIntegrityViolationException e) {
+            // ✅ 2) 충돌이면 현재 active row를 조회해서 판단
+            var cur = reservationRepository.findActiveLite(scheduleId, sn);
 
-            if (existing.getStatus() == ReservationStatus.CONFIRMED) {
+            if (cur == null) {
+                // 아주 짧은 타이밍에 상태 바뀐 케이스 -> 한번만 재시도
+                Reservation hold = Reservation.newHold(userId, scheduleId, sn, now, HOLD_TTL);
+                return reservationRepository.saveAndFlush(hold);
+            }
+
+            // CONFIRMED면 끝
+            if ("CONFIRMED".equals(cur.getStatus())) {
                 throw new BusinessException(ErrorCode.ALREADY_RESERVED);
             }
 
-            if (existing.getStatus() == ReservationStatus.HELD && existing.isValidHold(now)) {
-                throw new BusinessException(ErrorCode.ALREADY_HELD);
+            // HELD인데 만료면 -> 내가 만료처리하고 1회 재시도
+            if ("HELD".equals(cur.getStatus()) && cur.getExpiresAt() != null && cur.getExpiresAt().isBefore(now)) {
+                int expired = reservationRepository.expireIfExpired(scheduleId, sn, now);
+                if (expired > 0) {
+                    Reservation hold = Reservation.newHold(userId, scheduleId, sn, now, HOLD_TTL);
+                    return reservationRepository.saveAndFlush(hold);
+                }
             }
 
-            // 만료된 hold면 inactive 처리
-            existing.expire(now);
-            // ⚠️ 같은 트랜잭션에서 기존 active=1 -> 0 업데이트가 DB에 반영되기 전에
-            // 새 hold(active=1) insert가 먼저 flush되면 유니크 제약(ux_reservation_active) 위반 가능
-            reservationRepository.flush();
-        }
+            // ✅ 같은 유저가 이미 잡은 거면 멱등 성공 처리(선택)
+            if (cur.getUserId() != null && cur.getUserId().equals(userId)) {
+                // 이미 내가 잡은 상태면 그냥 성공으로 봐도 됨
+                // 필요하면 existing 엔티티를 다시 조회해서 반환하도록 바꿔도 됨
+                return reservationRepository.findById(cur.getId())
+                        .orElseThrow(() -> new BusinessException(ErrorCode.ALREADY_HELD));
+            }
 
-        try {
-            Reservation hold = Reservation.newHold(userId, scheduleId, sn, now, HOLD_TTL);
-            return reservationRepository.save(hold);
-        } catch (DataIntegrityViolationException e) {
-            // 동시성 레이스로 이미 다른 트랜잭션이 active=1을 잡은 케이스
             throw new BusinessException(ErrorCode.ALREADY_HELD);
         }
     }
+
 
     @Transactional
     public void confirm(Long userId, Long scheduleId, String seatNo) {
