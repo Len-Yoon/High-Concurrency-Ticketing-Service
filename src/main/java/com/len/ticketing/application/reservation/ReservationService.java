@@ -109,20 +109,13 @@ public class ReservationService {
      */
     @Transactional
     public void cancelHold(Long userId, Long scheduleId, String seatNo) {
-        if (seatNo == null || seatNo.isBlank()) {
-            throw new BusinessException(ErrorCode.INVALID_REQUEST);
-        }
-
         String sn = seatNo.trim().toUpperCase();
         LocalDateTime now = LocalDateTime.now();
 
-        var r = reservationRepository.findActiveForUpdate(scheduleId, sn)
-                .orElseThrow(() -> new BusinessException(ErrorCode.HOLD_NOT_FOUND));
-
-        if (!r.getUserId().equals(userId)) throw new BusinessException(ErrorCode.NOT_SEAT_OWNER);
-        if (r.getStatus() == ReservationStatus.CONFIRMED) throw new BusinessException(ErrorCode.ALREADY_RESERVED);
-
-        r.cancel(now);
+        int updated = reservationRepository.cancelHold(userId, scheduleId, sn, now);
+        if (updated == 0) {
+            throw new BusinessException(ErrorCode.HOLD_NOT_FOUND);
+        }
     }
 
     @Transactional
