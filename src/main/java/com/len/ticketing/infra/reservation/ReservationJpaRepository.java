@@ -129,4 +129,21 @@ public interface ReservationJpaRepository extends JpaRepository<Reservation, Lon
                    @Param("seatNo") String seatNo,
                    @Param("now") LocalDateTime now);
 
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query(value = """
+    UPDATE reservation
+       SET status = 'CONFIRMED',
+           updated_at = :now
+     WHERE user_id = :userId
+       AND schedule_id = :scheduleId
+       AND seat_no = :seatNo
+       AND active = 1
+       AND status = 'HELD'
+       AND (expires_at IS NULL OR expires_at > :now)
+    """, nativeQuery = true)
+    int confirmHold(@Param("userId") Long userId,
+                    @Param("scheduleId") Long scheduleId,
+                    @Param("seatNo") String seatNo,
+                    @Param("now") LocalDateTime now);
+
 }
