@@ -12,7 +12,6 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.dao.DeadlockLoserDataAccessException;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
@@ -53,11 +52,11 @@ public class TicketService {
             throw new BusinessException(ErrorCode.QUEUE_NOT_ALLOWED);
         }
 
-        boolean seatExists = seatRepository.existsBySchedule_IdAndSeatNo(scheduleId, sn);
-        if (!seatExists) {
+        if (!seatRepository.existsBySchedule_IdAndSeatNo(scheduleId, sn)) {
             throw new BusinessException(ErrorCode.SEAT_NOT_FOUND);
         }
 
+        // ✅ Redis 락 선점
         boolean locked = seatLockStore.lockSeat(scheduleId, sn, userId, SEAT_LOCK_TTL_SECONDS);
         if (!locked) {
             Long owner = seatLockStore.getLockOwner(scheduleId, sn);
@@ -70,46 +69,44 @@ public class TicketService {
         int maxAttempts = 5;
         long backoffMs = 10;
 
-        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
-            try {
-                // 여기서 ReservationService.hold()가 @Transactional이면, 메서드 리턴 시점에 커밋 완료
-                reservationService.hold(userId, scheduleId, sn);
-
-                // hold 성공 이후 SSE 발행
+        try {
+            for (int attempt = 1; attempt <= maxAttempts; attempt++) {
                 try {
-                    seatSseHub.publish(scheduleId,
+                    // ✅ 여기서 DB 트랜잭션(hold) 커밋 완료되어야 다음으로 감
+                    reservationService.hold(userId, scheduleId, sn);
+
+                    // ✅ (중요) SSE는 "커밋 이후"로 보냄 (트랜잭션/네트워크 IO 분리)
+                    publishAfterCommit(scheduleId,
                             new SeatChangedEvent("HELD", scheduleId, sn, true, userId, LocalDateTime.now()));
-                } catch (Exception ignore) {}
 
-                return new HoldSeatResult(true, "좌석 선점에 성공했습니다. 결제를 진행해주세요.");
+                    return new HoldSeatResult(true, "좌석 선점에 성공했습니다. 결제를 진행해주세요.");
 
-            } catch (CannotAcquireLockException | DeadlockLoserDataAccessException e) {
-                if (attempt == maxAttempts) {
-                    // 여기까지 오면 진짜 서버가 밀리는 상태 -> 락 풀고 500
-                    seatLockStore.releaseSeat(scheduleId, sn, userId);
-                    throw e;
+                } catch (CannotAcquireLockException | DeadlockLoserDataAccessException e) {
+                    if (attempt == maxAttempts) throw e;
+
+                    try {
+                        Thread.sleep(backoffMs);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                    }
+                    backoffMs = Math.min(backoffMs * 2, 100);
                 }
-                try {
-                    Thread.sleep(backoffMs);
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                }
-                backoffMs = Math.min(backoffMs * 2, 100);
-
-            } catch (RuntimeException e) {
-                // 기타 예외는 재시도 의미 없음 -> 락 풀고 종료
-                seatLockStore.releaseSeat(scheduleId, sn, userId);
-                throw e;
             }
-        }
 
-        // 이 라인에 도달하지 않음
-        seatLockStore.releaseSeat(scheduleId, sn, userId);
-        return new HoldSeatResult(false, "좌석 선점에 실패했습니다.");
+            // 여기로 오진 않음
+            return new HoldSeatResult(false, "좌석 선점에 실패했습니다.");
+
+        } catch (RuntimeException e) {
+            // ✅ 실패하면 Redis 락은 무조건 해제(유령락 방지)
+            seatLockStore.releaseSeat(scheduleId, sn, userId);
+            throw e;
+        }
     }
 
-    // ✅ TicketController가 찾는 시그니처( Long, String, Long ) 맞춰서 추가
-    @Transactional
+    /**
+     * release는 DB 취소 후(afterCommit)에 Redis 락 해제 + SSE 발행
+     */
+    @org.springframework.transaction.annotation.Transactional
     public void releaseSeat(Long scheduleId, String seatNo, Long userId) {
         if (scheduleId == null || userId == null || seatNo == null || seatNo.isBlank()) {
             throw new BusinessException(ErrorCode.INVALID_REQUEST);
@@ -129,8 +126,6 @@ public class TicketService {
         boolean ownerIsMe = owner != null && owner.equals(userId);
         boolean shouldPublishRelease = canceled || ownerIsMe;
 
-        // (중요) DB 커밋되기 전에 Redis 락을 먼저 풀면 충돌/데드락 가능성이 커짐
-        // -> DB 취소를 먼저 하고, 커밋 이후(afterCommit)에 Redis 락을 해제 + SSE 발행
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
@@ -144,6 +139,24 @@ public class TicketService {
                 }
             }
         });
+    }
+
+    private void publishAfterCommit(Long scheduleId, SeatChangedEvent event) {
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    try {
+                        seatSseHub.publish(scheduleId, event);
+                    } catch (Exception ignore) {}
+                }
+            });
+        } else {
+            // holdSeat는 트랜잭션이 없지만, 안전하게 fallback
+            try {
+                seatSseHub.publish(scheduleId, event);
+            } catch (Exception ignore) {}
+        }
     }
 
     public record HoldSeatResult(boolean success, String message) {}
