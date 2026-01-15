@@ -12,6 +12,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.dao.DeadlockLoserDataAccessException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
@@ -103,25 +104,15 @@ public class TicketService {
         }
     }
 
-    /**
-     * release는 DB 취소 후(afterCommit)에 Redis 락 해제 + SSE 발행
-     */
-    @org.springframework.transaction.annotation.Transactional
+    @Transactional
     public void releaseSeat(Long scheduleId, String seatNo, Long userId) {
         if (scheduleId == null || userId == null || seatNo == null || seatNo.isBlank()) {
             throw new BusinessException(ErrorCode.INVALID_REQUEST);
         }
         String sn = seatNo.trim().toUpperCase();
 
-        boolean canceled = false;
-        try {
-            reservationService.cancelHold(userId, scheduleId, sn);
-            canceled = true;
-        } catch (BusinessException e) {
-            if (e.getErrorCode() != ErrorCode.HOLD_NOT_FOUND) throw e;
-        }
+        boolean canceled = reservationService.cancelHoldIfExists(userId, scheduleId, sn);
 
-        // HOLD_NOT_FOUND라도, 내가 Redis 락 오너면 “해제 이벤트”를 쏴도 됨
         Long owner = seatLockStore.getLockOwner(scheduleId, sn);
         boolean ownerIsMe = owner != null && owner.equals(userId);
         boolean shouldPublishRelease = canceled || ownerIsMe;
@@ -129,7 +120,7 @@ public class TicketService {
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                seatLockStore.releaseSeat(scheduleId, sn, userId);
+                try { seatLockStore.releaseSeat(scheduleId, sn, userId); } catch (Exception ignore) {}
 
                 if (shouldPublishRelease) {
                     try {
@@ -140,6 +131,7 @@ public class TicketService {
             }
         });
     }
+
 
     private void publishAfterCommit(Long scheduleId, SeatChangedEvent event) {
         if (TransactionSynchronizationManager.isActualTransactionActive()) {
