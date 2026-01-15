@@ -109,28 +109,51 @@ public class TicketService {
         if (scheduleId == null || userId == null || seatNo == null || seatNo.isBlank()) {
             throw new BusinessException(ErrorCode.INVALID_REQUEST);
         }
-        String sn = seatNo.trim().toUpperCase();
 
+        final String sn = seatNo.trim().toUpperCase();
+
+        // 1) DB hold 취소 (멱등)
         boolean canceled = reservationService.cancelHoldIfExists(userId, scheduleId, sn);
 
-        Long owner = seatLockStore.getLockOwner(scheduleId, sn);
-        boolean ownerIsMe = owner != null && owner.equals(userId);
-        boolean shouldPublishRelease = canceled || ownerIsMe;
-
+        // 2) 커밋 후 처리 등록
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                try { seatLockStore.releaseSeat(scheduleId, sn, userId); } catch (Exception ignore) {}
 
+                // 커밋 이후 "지금 락 소유자" 다시 확인
+                Long ownerAfter = null;
+                try {
+                    ownerAfter = seatLockStore.getLockOwner(scheduleId, sn);
+                } catch (Exception e) {
+                    // 여기서 조회 실패하면 publish 판단을 보수적으로: canceled 기반으로만
+                }
+
+                boolean ownerIsMeAfter = ownerAfter != null && ownerAfter.equals(userId);
+                boolean shouldPublishRelease = canceled || ownerIsMeAfter;
+
+                // 3) 락 해제는 항상 시도 (멱등)
+                try {
+                    seatLockStore.releaseSeat(scheduleId, sn, userId);
+                } catch (Exception e) {
+                    // 예외 무시하지 말고 최소 로그
+                    // log.warn("seatLockStore.releaseSeat failed. scheduleId={}, seatNo={}, userId={}", scheduleId, sn, userId, e);
+                }
+
+                // 4) publish (멱등/조건부)
                 if (shouldPublishRelease) {
                     try {
-                        seatSseHub.publish(scheduleId,
-                                new SeatChangedEvent("RELEASED", scheduleId, sn, false, userId, LocalDateTime.now()));
-                    } catch (Exception ignore) {}
+                        seatSseHub.publish(
+                                scheduleId,
+                                new SeatChangedEvent("RELEASED", scheduleId, sn, false, userId, LocalDateTime.now())
+                        );
+                    } catch (Exception e) {
+                        // log.warn("seatSseHub.publish failed. scheduleId={}, seatNo={}, userId={}", scheduleId, sn, userId, e);
+                    }
                 }
             }
         });
     }
+
 
 
     private void publishAfterCommit(Long scheduleId, SeatChangedEvent event) {
