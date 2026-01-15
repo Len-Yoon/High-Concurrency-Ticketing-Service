@@ -147,4 +147,17 @@ public class ReservationService {
         if (!"HELD".equals(cur.getStatus())) throw new BusinessException(ErrorCode.HOLD_NOT_FOUND);
         if (cur.getExpiresAt() == null || !cur.getExpiresAt().isAfter(now)) throw new BusinessException(ErrorCode.HOLD_EXPIRED);
     }
+
+    @Transactional
+    public boolean cancelHoldIfExists(Long userId, Long scheduleId, String seatNo) {
+        if (seatNo == null || seatNo.isBlank()) {
+            throw new BusinessException(ErrorCode.INVALID_REQUEST);
+        }
+
+        String sn = seatNo.trim().toUpperCase();
+        LocalDateTime now = LocalDateTime.now();
+
+        int updated = reservationRepository.cancelHold(userId, scheduleId, sn, now);
+        return updated > 0;
+    }
 }
