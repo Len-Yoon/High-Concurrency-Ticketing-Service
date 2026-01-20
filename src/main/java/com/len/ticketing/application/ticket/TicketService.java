@@ -9,12 +9,14 @@ import com.len.ticketing.infra.concert.SeatJpaRepository;
 import com.len.ticketing.infra.sse.SeatChangedEvent;
 import com.len.ticketing.infra.sse.SeatSseHub;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.dao.DeadlockLoserDataAccessException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import jakarta.annotation.PostConstruct;
 
 import java.time.LocalDateTime;
 
@@ -32,6 +34,14 @@ public class TicketService {
     private final SeatSseHub seatSseHub;
 
     /**
+     * ✅ 로컬/부하테스트에서 큐 게이트를 끌 수 있는 스위치
+     * - 기본값 true (운영 안전)
+     * - application-local.yml 에서 false로 끄면 QUEUE_NOT_ALLOWED 안 뜸
+     */
+    @Value("${ticketing.queue.enabled:true}")
+    private boolean queueEnabled;
+
+    /**
      * - 여기서는 트랜잭션을 잡지 않는다.
      * - Redis/대기열/좌석 존재 체크는 트랜잭션 필요 없음
      * - DB hold는 ReservationService 쪽에서 짧게 트랜잭션으로 처리
@@ -43,14 +53,17 @@ public class TicketService {
         }
         String sn = seatNo.trim().toUpperCase();
 
-        // 대기열을 먼저 탄 적 없으면 자동 진입시켜서 스킵을 막는다.
-        if (queueStore.getPosition(scheduleId, userId) == -1L) {
-            queueStore.enterQueue(scheduleId, userId);
-        }
+        // ✅ Queue Gate (로컬/부하테스트에서 끌 수 있게)
+        if (queueEnabled) {
+            // 대기열을 먼저 탄 적 없으면 자동 진입시켜서 스킵을 막는다.
+            if (queueStore.getPosition(scheduleId, userId) == -1L) {
+                queueStore.enterQueue(scheduleId, userId);
+            }
 
-        boolean canEnter = queueStore.canEnter(scheduleId, userId, ALLOWED_QUEUE_RANK);
-        if (!canEnter) {
-            throw new BusinessException(ErrorCode.QUEUE_NOT_ALLOWED);
+            boolean canEnter = queueStore.canEnter(scheduleId, userId, ALLOWED_QUEUE_RANK);
+            if (!canEnter) {
+                throw new BusinessException(ErrorCode.QUEUE_NOT_ALLOWED);
+            }
         }
 
         if (!seatRepository.existsBySchedule_IdAndSeatNo(scheduleId, sn)) {
@@ -110,10 +123,12 @@ public class TicketService {
             throw new BusinessException(ErrorCode.INVALID_REQUEST);
         }
 
+        final Long sid = scheduleId;
+        final Long uid = userId;
         final String sn = seatNo.trim().toUpperCase();
 
         // 1) DB hold 취소 (멱등)
-        boolean canceled = reservationService.cancelHoldIfExists(userId, scheduleId, sn);
+        final boolean canceled = reservationService.cancelHoldIfExists(uid, sid, sn);
 
         // 2) 커밋 후 처리 등록
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
@@ -123,38 +138,33 @@ public class TicketService {
                 // 커밋 이후 "지금 락 소유자" 다시 확인
                 Long ownerAfter = null;
                 try {
-                    ownerAfter = seatLockStore.getLockOwner(scheduleId, sn);
-                } catch (Exception e) {
-                    // 여기서 조회 실패하면 publish 판단을 보수적으로: canceled 기반으로만
-                }
+                    ownerAfter = seatLockStore.getLockOwner(sid, sn);
+                } catch (Exception ignored) {}
 
-                boolean ownerIsMeAfter = ownerAfter != null && ownerAfter.equals(userId);
+                boolean ownerIsMeAfter = ownerAfter != null && ownerAfter.equals(uid);
                 boolean shouldPublishRelease = canceled || ownerIsMeAfter;
 
                 // 3) 락 해제는 항상 시도 (멱등)
                 try {
-                    seatLockStore.releaseSeat(scheduleId, sn, userId);
+                    seatLockStore.releaseSeat(sid, sn, uid);
                 } catch (Exception e) {
-                    // 예외 무시하지 말고 최소 로그
-                    // log.warn("seatLockStore.releaseSeat failed. scheduleId={}, seatNo={}, userId={}", scheduleId, sn, userId, e);
+                    // TODO: 최소 warn 로그는 남기는게 좋음
                 }
 
                 // 4) publish (멱등/조건부)
                 if (shouldPublishRelease) {
                     try {
                         seatSseHub.publish(
-                                scheduleId,
-                                new SeatChangedEvent("RELEASED", scheduleId, sn, false, userId, LocalDateTime.now())
+                                sid,
+                                new SeatChangedEvent("RELEASED", sid, sn, false, uid, LocalDateTime.now())
                         );
                     } catch (Exception e) {
-                        // log.warn("seatSseHub.publish failed. scheduleId={}, seatNo={}, userId={}", scheduleId, sn, userId, e);
+                        // TODO: 최소 warn 로그는 남기는게 좋음
                     }
                 }
             }
         });
     }
-
-
 
     private void publishAfterCommit(Long scheduleId, SeatChangedEvent event) {
         if (TransactionSynchronizationManager.isActualTransactionActive()) {
@@ -175,4 +185,9 @@ public class TicketService {
     }
 
     public record HoldSeatResult(boolean success, String message) {}
+
+    @PostConstruct
+    public void init() {
+        System.out.println("ACTIVE ticketing.queue.enabled = " + queueEnabled);
+    }
 }
