@@ -4,6 +4,7 @@ import com.len.ticketing.domain.queue.QueueStore;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
+import org.springframework.beans.factory.annotation.Value;
 
 import java.time.Instant;
 
@@ -52,10 +53,17 @@ public class RedisQueueStore implements QueueStore {
 
     @Override
     public boolean canEnter(long scheduleId, long userId, long allowedRank) {
+
+        // ✅ 전역 큐 OFF (local / loadtest)
+        if (!queueEnabled) return true;
+
         long position = getPosition(scheduleId, userId);
         if (position == -1L) {
             return false;
         }
         return position <= allowedRank;
     }
+
+    @Value("${ticketing.queue.enabled:true}")
+    private boolean queueEnabled;
 }
