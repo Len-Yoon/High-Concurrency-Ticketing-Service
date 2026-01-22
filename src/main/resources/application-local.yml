@@ -1,3 +1,3 @@
 ticketing:
   queue:
-    enabled: false
+    enabled: true
