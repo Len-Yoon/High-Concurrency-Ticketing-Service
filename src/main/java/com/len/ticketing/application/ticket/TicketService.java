@@ -47,14 +47,15 @@ public class TicketService {
      * - DB hold는 ReservationService 쪽에서 짧게 트랜잭션으로 처리
      * - 데드락/락 획득 실패는 짧게 재시도(새 트랜잭션)해서 5xx를 줄인다.
      */
-    public HoldSeatResult holdSeat(Long scheduleId, String seatNo, Long userId) {
+    public HoldSeatResult holdSeat(Long scheduleId, String seatNo, Long userId, boolean bypassQueue) {
         if (scheduleId == null || userId == null || seatNo == null || seatNo.isBlank()) {
             throw new BusinessException(ErrorCode.INVALID_REQUEST);
         }
         String sn = seatNo.trim().toUpperCase();
 
         // ✅ Queue Gate (로컬/부하테스트에서 끌 수 있게)
-        if (queueEnabled) {
+        if (queueEnabled && !bypassQueue) {
+
             // 대기열을 먼저 탄 적 없으면 자동 진입시켜서 스킵을 막는다.
             if (queueStore.getPosition(scheduleId, userId) == -1L) {
                 queueStore.enterQueue(scheduleId, userId);
