@@ -16,11 +16,17 @@ public class TicketController {
 
     // 좌석 선점
     @PostMapping("/hold")
-    public HoldSeatResponse hold(@RequestBody HoldSeatRequest request) {
+    public HoldSeatResponse hold(
+            @RequestBody HoldSeatRequest request,
+            @RequestHeader(value = "X-LOADTEST-BYPASS", required = false) String bypass
+    ) {
+        boolean bypassQueue = "true".equalsIgnoreCase(bypass);
+
         var result = ticketService.holdSeat(
                 request.scheduleId(),
                 request.seatNo(),
-                request.userId()
+                request.userId(),
+                bypassQueue
         );
         return new HoldSeatResponse(result.success(), result.message());
     }
