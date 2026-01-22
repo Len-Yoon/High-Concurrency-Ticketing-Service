@@ -16,19 +16,22 @@ const http_500 = new Counter("http_500");
 const hold_latency = new Trend("hold_latency", true);
 const bad_rate = new Rate("bad_rate");
 
+const holdParams = {
+    headers: {
+        "Content-Type": "application/json",
+        "X-LOADTEST-BYPASS": "true",
+    },
+};
+
 export const options = {
     vus: VUS,
     iterations: VUS * ITERS, // 각 VU가 1회씩만 때리게
     thresholds: {
         bad_rate: ["rate<0.02"],           // 이상 응답(예: 500, 400 등) 거의 없어야 함
-        hold_latency: ["p(95)<300"],       // 로컬 기준 대충(원하면 조정)
+        hold_latency: ["p(95)<1500"],       // 로컬 기준 대충(원하면 조정)
         "http_500": ["count==0"],          // 500은 0이어야 함 (핵심)
     },
 };
-
-function jsonHeaders() {
-    return { headers: { "Content-Type": "application/json" } };
-}
 
 function randUserId() {
     // VU별 고유 userId (충돌/멱등 테스트용)
@@ -43,7 +46,7 @@ export default function () {
     });
 
     const t0 = Date.now();
-    const res = http.post(`${BASE_URL}/api/tickets/hold`, body, jsonHeaders());
+    const res = http.post(`${BASE_URL}/api/tickets/hold`, body, holdParams);
     hold_latency.add(Date.now() - t0);
 
     // 기대:

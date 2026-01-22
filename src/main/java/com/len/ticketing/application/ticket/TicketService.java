@@ -48,37 +48,51 @@ public class TicketService {
      * - 데드락/락 획득 실패는 짧게 재시도(새 트랜잭션)해서 5xx를 줄인다.
      */
     public HoldSeatResult holdSeat(Long scheduleId, String seatNo, Long userId, boolean bypassQueue) {
+        long t0 = System.nanoTime();
+
         if (scheduleId == null || userId == null || seatNo == null || seatNo.isBlank()) {
             throw new BusinessException(ErrorCode.INVALID_REQUEST);
         }
+
         String sn = seatNo.trim().toUpperCase();
+        long t1 = System.nanoTime();
 
-        // ✅ Queue Gate (로컬/부하테스트에서 끌 수 있게)
+        // Queue Gate
         if (queueEnabled && !bypassQueue) {
-
-            // 대기열을 먼저 탄 적 없으면 자동 진입시켜서 스킵을 막는다.
             if (queueStore.getPosition(scheduleId, userId) == -1L) {
                 queueStore.enterQueue(scheduleId, userId);
             }
-
             boolean canEnter = queueStore.canEnter(scheduleId, userId, ALLOWED_QUEUE_RANK);
-            if (!canEnter) {
-                throw new BusinessException(ErrorCode.QUEUE_NOT_ALLOWED);
-            }
+            if (!canEnter) throw new BusinessException(ErrorCode.QUEUE_NOT_ALLOWED);
         }
+        long t2 = System.nanoTime();
 
-        if (!seatRepository.existsBySchedule_IdAndSeatNo(scheduleId, sn)) {
+        boolean exists = seatRepository.existsBySchedule_IdAndSeatNo(scheduleId, sn);
+        long t3 = System.nanoTime();
+        if (!exists) {
             throw new BusinessException(ErrorCode.SEAT_NOT_FOUND);
         }
 
-        // ✅ Redis 락 선점
         boolean locked = seatLockStore.lockSeat(scheduleId, sn, userId, SEAT_LOCK_TTL_SECONDS);
+        long t4 = System.nanoTime();
+
+        if ((userId % 50) == 0) {
+            System.out.printf(
+                    "holdSeat timing sn=%s total=%dms normalize=%dms queue=%dms exists=%dms lock=%dms bypass=%s enabled=%s%n",
+                    sn,
+                    (t4 - t0) / 1_000_000,
+                    (t1 - t0) / 1_000_000,
+                    (t2 - t1) / 1_000_000,
+                    (t3 - t2) / 1_000_000,
+                    (t4 - t3) / 1_000_000,
+                    bypassQueue,
+                    queueEnabled
+            );
+        }
+
         if (!locked) {
-            Long owner = seatLockStore.getLockOwner(scheduleId, sn);
-            if (owner != null && !owner.equals(userId)) {
-                throw new BusinessException(ErrorCode.SEAT_ALREADY_LOCKED);
-            }
-            return new HoldSeatResult(false, "좌석 선점에 실패했습니다.");
+            // 경합 상황에선 owner 조회(GET)도 부하임 -> 그냥 409로 통일
+            throw new BusinessException(ErrorCode.SEAT_ALREADY_LOCKED);
         }
 
         int maxAttempts = 5;
