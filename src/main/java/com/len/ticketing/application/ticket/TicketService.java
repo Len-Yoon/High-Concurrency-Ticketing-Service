@@ -216,13 +216,27 @@ public class TicketService {
         final Long uid = userId;
         final String sn = seatNo.trim().toUpperCase();
 
-        // DB 확정
+        // (권장) Redis 락 소유자 확인: 내 락이 아니면 확정 불가
+        Long owner = null;
+        try {
+            owner = seatLockStore.getLockOwner(sid, sn);
+        } catch (Exception ignored) {}
+
+        if (owner != null && !owner.equals(uid)) {
+            throw new BusinessException(ErrorCode.NOT_SEAT_OWNER);
+        }
+
+        // DB 확정(트랜잭션)
         reservationService.confirm(uid, sid, sn);
 
-        // 커밋 이후 SSE
+        // 커밋 이후: 락 해제 + SSE 발행
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
+                try {
+                    seatLockStore.releaseSeat(sid, sn, uid);
+                } catch (Exception ignored) {}
+
                 try {
                     seatSseHub.publish(
                             sid,

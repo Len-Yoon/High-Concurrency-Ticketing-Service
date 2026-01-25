@@ -42,6 +42,7 @@ public class TicketController {
         );
     }
 
+    // ✅ 결제 확정
     @PostMapping("/confirm")
     public void confirm(@RequestBody ConfirmSeatRequest req) {
         ticketService.confirmSeat(req.scheduleId(), req.seatNo(), req.userId());

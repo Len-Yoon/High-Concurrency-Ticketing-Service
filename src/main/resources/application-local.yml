@@ -1,3 +1,9 @@
 ticketing:
   queue:
     enabled: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,mappings
