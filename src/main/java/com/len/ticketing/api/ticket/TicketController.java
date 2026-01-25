@@ -1,5 +1,6 @@
 package com.len.ticketing.api.ticket;
 
+import com.len.ticketing.api.ticket.dto.ConfirmSeatRequest;
 import com.len.ticketing.api.ticket.dto.HoldSeatRequest;
 import com.len.ticketing.api.ticket.dto.HoldSeatResponse;
 import com.len.ticketing.api.ticket.dto.ReleaseSeatRequest;
@@ -39,5 +40,10 @@ public class TicketController {
                 request.seatNo(),
                 request.userId()
         );
+    }
+
+    @PostMapping("/confirm")
+    public void confirm(@RequestBody ConfirmSeatRequest req) {
+        ticketService.confirmSeat(req.scheduleId(), req.seatNo(), req.userId());
     }
 }

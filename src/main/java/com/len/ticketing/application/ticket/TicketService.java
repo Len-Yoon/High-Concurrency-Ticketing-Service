@@ -205,4 +205,31 @@ public class TicketService {
     public void init() {
         System.out.println("ACTIVE ticketing.queue.enabled = " + queueEnabled);
     }
+
+    @Transactional
+    public void confirmSeat(Long scheduleId, String seatNo, Long userId) {
+        if (scheduleId == null || userId == null || seatNo == null || seatNo.isBlank()) {
+            throw new BusinessException(ErrorCode.INVALID_REQUEST);
+        }
+
+        final Long sid = scheduleId;
+        final Long uid = userId;
+        final String sn = seatNo.trim().toUpperCase();
+
+        // DB 확정
+        reservationService.confirm(uid, sid, sn);
+
+        // 커밋 이후 SSE
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                try {
+                    seatSseHub.publish(
+                            sid,
+                            new SeatChangedEvent("CONFIRMED", sid, sn, true, uid, LocalDateTime.now())
+                    );
+                } catch (Exception ignored) {}
+            }
+        });
+    }
 }
