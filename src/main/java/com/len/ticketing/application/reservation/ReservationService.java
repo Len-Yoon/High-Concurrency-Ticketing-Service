@@ -82,19 +82,31 @@ public class ReservationService {
         String sn = normalizeSeatNo(seatNo);
         LocalDateTime now = LocalDateTime.now();
 
-        int expired = reservationRepository.expireIfExpired(scheduleId, sn, now);
-        if (expired > 0) {
-            throw new BusinessException(ErrorCode.HOLD_EXPIRED);
+        // 1) 원자적 confirm 시도 (성공하면 끝)
+        int updated = reservationRepository.confirmHold(userId, scheduleId, sn, now);
+        if (updated > 0) return;
+
+        // 2) 실패 시에만 현재 상태 조회해서 정확한 에러 매핑
+        var cur = reservationRepository.findActiveLite(scheduleId, sn);
+        if (cur == null) throw new BusinessException(ErrorCode.HOLD_NOT_FOUND);
+
+        if ("CONFIRMED".equals(cur.getStatus())) {
+            throw new BusinessException(ErrorCode.ALREADY_RESERVED);
         }
 
-        int updated = reservationRepository.confirmHold(userId, scheduleId, sn, now);
-        if (updated == 0) {
-            var cur = reservationRepository.findActiveLite(scheduleId, sn);
-            if (cur == null) throw new BusinessException(ErrorCode.HOLD_NOT_FOUND);
-            if ("CONFIRMED".equals(cur.getStatus())) throw new BusinessException(ErrorCode.ALREADY_RESERVED);
-            if (cur.getUserId() != null && !cur.getUserId().equals(userId)) throw new BusinessException(ErrorCode.HOLD_NOT_FOUND);
-            throw new BusinessException(ErrorCode.HOLD_NOT_FOUND);
+        // HELD인데 만료된 경우: 여기서 expire 처리 후 HOLD_EXPIRED
+        if ("HELD".equals(cur.getStatus())) {
+            if (cur.getUserId() != null && !cur.getUserId().equals(userId)) {
+                throw new BusinessException(ErrorCode.HOLD_NOT_FOUND); // 정책상 소유자 아니면 not found 처리
+            }
+
+            if (cur.getExpiresAt() != null && !cur.getExpiresAt().isAfter(now)) { // expiresAt <= now
+                reservationRepository.expireIfExpired(scheduleId, sn, now);
+                throw new BusinessException(ErrorCode.HOLD_EXPIRED);
+            }
         }
+
+        throw new BusinessException(ErrorCode.HOLD_NOT_FOUND);
     }
 
     // ---------- CANCEL (사용자 액션 전용) ----------
