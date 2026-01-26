@@ -222,7 +222,10 @@ public class TicketService {
             owner = seatLockStore.getLockOwner(sid, sn);
         } catch (Exception ignored) {}
 
-        if (owner != null && !owner.equals(uid)) {
+        if (owner == null) {
+            throw new BusinessException(ErrorCode.HOLD_NOT_FOUND); // 또는 LOCK_NOT_FOUND
+        }
+        if (!owner.equals(uid)) {
             throw new BusinessException(ErrorCode.NOT_SEAT_OWNER);
         }
 
