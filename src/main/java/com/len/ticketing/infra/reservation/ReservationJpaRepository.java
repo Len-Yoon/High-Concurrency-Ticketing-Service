@@ -105,7 +105,7 @@ public interface ReservationJpaRepository extends JpaRepository<Reservation, Lon
        AND seat_no = :seatNo
        AND active = 1
        AND status = 'HELD'
-       AND expires_at < :now
+       AND expires_at <= :now
     """, nativeQuery = true)
     int expireIfExpired(@Param("scheduleId") Long scheduleId,
                         @Param("seatNo") String seatNo,
