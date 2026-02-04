@@ -19,7 +19,8 @@ public class TicketController {
     @PostMapping("/hold")
     public HoldSeatResponse hold(
             @RequestBody HoldSeatRequest request,
-            @RequestHeader(value = "X-LOADTEST-BYPASS", required = false) String bypass
+            @RequestHeader(value = "X-LOADTEST-BYPASS", required = false) String bypass,
+            @RequestHeader(value = "X-QUEUE-TOKEN", required = false) String queueToken
     ) {
         boolean bypassQueue = "true".equalsIgnoreCase(bypass);
 
@@ -27,7 +28,8 @@ public class TicketController {
                 request.scheduleId(),
                 request.seatNo(),
                 request.userId(),
-                bypassQueue
+                bypassQueue,
+                queueToken
         );
         return new HoldSeatResponse(result.success(), result.message());
     }
