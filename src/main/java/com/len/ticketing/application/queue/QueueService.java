@@ -5,29 +5,42 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-@RequiredArgsConstructor
 @Service
+@RequiredArgsConstructor
 public class QueueService {
 
     private final QueueStore queueStore;
 
-    // 나중에 설정값에서 빼고 싶으면 @Value로 뽑자
-    private static final long DEFAULT_ALLOWED_RANK = 100L;
+    @Value("${ticketing.queue.capacity:100}")
+    private long capacity;
 
-    @Transactional(readOnly = true)
-    public QueueEnterResult enter(long scheduleId, long userId) {
-        long position = queueStore.enterQueue(scheduleId, userId);
-        boolean canEnter = queueStore.canEnter(scheduleId, userId, DEFAULT_ALLOWED_RANK);
-        return new QueueEnterResult(position, canEnter);
+    @Value("${ticketing.queue.pass-ttl-seconds:300}")
+    private long passTtlSeconds;
+
+    public QueueStatusDto enter(long scheduleId, long userId) {
+        long pos = queueStore.enterQueue(scheduleId, userId);
+
+        QueuePass pass = queueStore.tryIssuePass(scheduleId, userId, capacity, passTtlSeconds);
+        if (pass != null) {
+            return new QueueStatusDto(0, true, pass.token(), pass.expiresAtEpochMs());
+        }
+        return new QueueStatusDto(pos, false, null, null);
     }
 
-    @Transactional(readOnly = true)
-    public QueueStatusResult getStatus(long scheduleId, long userId) {
-        long position = queueStore.getPosition(scheduleId, userId);
-        boolean canEnter = queueStore.canEnter(scheduleId, userId, DEFAULT_ALLOWED_RANK);
-        return new QueueStatusResult(position, canEnter);
+    public QueueStatusDto status(long scheduleId, long userId) {
+        // status도 동일하게 “발급 시도”를 해줘야 슬롯이 비면 바로 들어감
+        long pos = queueStore.getPosition(scheduleId, userId);
+        if (pos == -1) {
+            // 혹시 큐에 없으면 진입시키고 상태 반환(옵션)
+            pos = queueStore.enterQueue(scheduleId, userId);
+        }
+
+        QueuePass pass = queueStore.tryIssuePass(scheduleId, userId, capacity, passTtlSeconds);
+        if (pass != null) {
+            return new QueueStatusDto(0, true, pass.token(), pass.expiresAtEpochMs());
+        }
+        return new QueueStatusDto(pos, false, null, null);
     }
 
-    public record QueueEnterResult(long position, boolean canEnter) {}
-    public record QueueStatusResult(long position, boolean canEnter) {}
+    public record QueueStatusDto(long position, boolean canEnter, String token, Long expiresAt) {}
 }
