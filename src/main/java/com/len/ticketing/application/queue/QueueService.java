@@ -1,9 +1,10 @@
 package com.len.ticketing.application.queue;
 
+import com.len.ticketing.domain.queue.QueuePass;
 import com.len.ticketing.domain.queue.QueueStore;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 @Service
 @RequiredArgsConstructor
@@ -28,10 +29,8 @@ public class QueueService {
     }
 
     public QueueStatusDto status(long scheduleId, long userId) {
-        // status도 동일하게 “발급 시도”를 해줘야 슬롯이 비면 바로 들어감
         long pos = queueStore.getPosition(scheduleId, userId);
         if (pos == -1) {
-            // 혹시 큐에 없으면 진입시키고 상태 반환(옵션)
             pos = queueStore.enterQueue(scheduleId, userId);
         }
 
