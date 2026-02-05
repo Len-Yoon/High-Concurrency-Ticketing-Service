@@ -15,7 +15,6 @@ public class TicketController {
 
     private final TicketService ticketService;
 
-    // 좌석 선점
     @PostMapping("/hold")
     public HoldSeatResponse hold(
             @RequestBody HoldSeatRequest request,
@@ -34,7 +33,6 @@ public class TicketController {
         return new HoldSeatResponse(result.success(), result.message());
     }
 
-    // 좌석 선점 해제
     @PostMapping("/release")
     public void release(@RequestBody ReleaseSeatRequest request) {
         ticketService.releaseSeat(
@@ -44,7 +42,6 @@ public class TicketController {
         );
     }
 
-    // ✅ 결제 확정
     @PostMapping("/confirm")
     public void confirm(@RequestBody ConfirmSeatRequest req) {
         ticketService.confirmSeat(req.scheduleId(), req.seatNo(), req.userId());
