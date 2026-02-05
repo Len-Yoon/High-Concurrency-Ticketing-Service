@@ -4,6 +4,7 @@ import com.len.ticketing.api.ticket.dto.ConfirmSeatRequest;
 import com.len.ticketing.api.ticket.dto.HoldSeatRequest;
 import com.len.ticketing.api.ticket.dto.HoldSeatResponse;
 import com.len.ticketing.api.ticket.dto.ReleaseSeatRequest;
+import com.len.ticketing.application.confirm.ConfirmCommandService;
 import com.len.ticketing.application.ticket.TicketService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
@@ -14,6 +15,7 @@ import org.springframework.web.bind.annotation.*;
 public class TicketController {
 
     private final TicketService ticketService;
+    private final ConfirmCommandService confirmCommandService;
 
     @PostMapping("/hold")
     public HoldSeatResponse hold(
@@ -44,6 +46,6 @@ public class TicketController {
 
     @PostMapping("/confirm")
     public void confirm(@RequestBody ConfirmSeatRequest req) {
-        ticketService.confirmSeat(req.scheduleId(), req.seatNo(), req.userId());
+        confirmCommandService.requestConfirm(req.scheduleId(), req.seatNo(), req.userId());
     }
 }
