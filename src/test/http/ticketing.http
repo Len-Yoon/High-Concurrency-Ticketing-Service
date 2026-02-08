@@ -1,4 +1,4 @@
-### 1) enter - 토큰 발급
+### 0) Queue 진입 + token 저장
 POST http://127.0.0.1:8080/api/queue/enter
 Content-Type: application/json
 
@@ -8,12 +8,13 @@ Content-Type: application/json
 }
 
 > {%
-    client.global.set("token", response.body.token);
-    client.global.set("userId", "1001");
     client.global.set("scheduleId", "1");
+    client.global.set("userId", "1001");
+    client.global.set("token", response.body.token);
 %}
 
-### 2) hold - 저장된 token 사용
+
+### 1) 좌석 Hold (token 필수)
 POST http://127.0.0.1:8080/api/tickets/hold
 Content-Type: application/json
 X-QUEUE-TOKEN: {{token}}
@@ -22,4 +23,37 @@ X-QUEUE-TOKEN: {{token}}
   "scheduleId": {{scheduleId}},
   "seatNo": "A1",
   "userId": {{userId}}
+}
+
+
+### 2) Confirm 요청 (Outbox로 적재)
+POST http://127.0.0.1:8080/api/tickets/confirm
+Content-Type: application/json
+
+{
+  "scheduleId": {{scheduleId}},
+  "seatNo": "A1",
+  "userId": {{userId}}
+}
+
+
+### 3) (선택) Release 테스트
+POST http://127.0.0.1:8080/api/tickets/release
+Content-Type: application/json
+
+{
+  "scheduleId": {{scheduleId}},
+  "seatNo": "A1",
+  "userId": {{userId}}
+}
+
+
+### 4) 실패 케이스 확인 (token 없이 hold -> QUEUE_NOT_ALLOWED 기대)
+POST http://127.0.0.1:8080/api/tickets/hold
+Content-Type: application/json
+
+{
+  "scheduleId": 1,
+  "seatNo": "A2",
+  "userId": 1001
 }
