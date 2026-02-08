@@ -1,4 +1,5 @@
 import http from "k6/http";
+http.setResponseCallback(http.expectedStatuses(200, 409));
 import { check } from "k6";
 import { Counter } from "k6/metrics";
 
