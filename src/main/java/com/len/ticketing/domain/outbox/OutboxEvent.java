@@ -45,6 +45,12 @@ public class OutboxEvent {
     @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt;
 
+    @Column(name = "last_error", length = 500)
+    private String lastError;
+
+    @Column(name = "max_retry", nullable = false)
+    private int maxRetry;
+
     public static OutboxEvent pending(String eventId, String topic, String eventKey, String payload) {
         OutboxEvent e = new OutboxEvent();
         LocalDateTime now = LocalDateTime.now();
@@ -57,19 +63,33 @@ public class OutboxEvent {
         e.nextRetryAt = now;
         e.createdAt = now;
         e.updatedAt = now;
+        e.maxRetry = 10;
+        e.lastError = null;
         return e;
     }
 
     public void markPublished() {
         this.status = OutboxStatus.PUBLISHED;
         this.publishedAt = LocalDateTime.now();
+        this.lastError = null;
         this.updatedAt = LocalDateTime.now();
     }
 
-    public void markRetry(int backoffSeconds) {
-        this.status = OutboxStatus.PENDING;
+    public void markRetryOrFail(String errorMessage) {
         this.retryCount += 1;
-        this.nextRetryAt = LocalDateTime.now().plusSeconds(backoffSeconds);
+        this.lastError = (errorMessage == null) ? null :
+                (errorMessage.length() > 500 ? errorMessage.substring(0, 500) : errorMessage);
+
+        if (this.retryCount >= this.maxRetry) {
+            this.status = OutboxStatus.FAILED;
+            this.updatedAt = LocalDateTime.now();
+            return;
+        }
+
+        int backoff = Math.min(60, (int) Math.pow(2, Math.min(6, this.retryCount))); // 2,4,8...60
+        this.status = OutboxStatus.PENDING;
+        this.nextRetryAt = LocalDateTime.now().plusSeconds(backoff);
         this.updatedAt = LocalDateTime.now();
     }
+
 }
