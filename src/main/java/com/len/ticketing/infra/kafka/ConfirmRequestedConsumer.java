@@ -21,7 +21,6 @@ public class ConfirmRequestedConsumer {
     private final JdbcTemplate jdbcTemplate;
 
     @KafkaListener(topics = "ticket.confirm.requested.v1", groupId = "ticketing-confirm-v1")
-    @Transactional
     public void onMessage(String payload) {
         ConfirmRequestedPayload evt;
 
