@@ -184,7 +184,7 @@ public class TicketService {
         });
     }
 
-    @Transactional
+    @Transactional(noRollbackFor = BusinessException.class)
     public void confirmSeat(Long scheduleId, String seatNo, Long userId) {
         if (scheduleId == null || userId == null || seatNo == null || seatNo.isBlank()) {
             throw new BusinessException(ErrorCode.INVALID_REQUEST);
