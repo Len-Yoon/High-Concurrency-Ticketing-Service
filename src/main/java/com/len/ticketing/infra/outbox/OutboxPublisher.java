@@ -26,8 +26,7 @@ public class OutboxPublisher {
                 kafkaTemplate.send(e.getTopic(), e.getEventKey(), e.getPayload()).get();
                 e.markPublished();
             } catch (Exception ex) {
-                int backoff = 2; // 일단 단순 backoff
-                e.markRetry(backoff);
+                e.markRetryOrFail(ex.getClass().getSimpleName() + ": " + ex.getMessage());
             }
         }
     }
