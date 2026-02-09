@@ -160,4 +160,11 @@ public class ReservationService {
         if (!"HELD".equals(cur.getStatus())) throw new BusinessException(ErrorCode.HOLD_NOT_FOUND);
         if (cur.getExpiresAt() == null || !cur.getExpiresAt().isAfter(now)) throw new BusinessException(ErrorCode.HOLD_EXPIRED);
     }
+
+    // ---------- HasValidHold --------
+    @Transactional(readOnly = true)
+    public boolean hasValidHold(Long userId, Long scheduleId, String seatNo, LocalDateTime now) {
+        String sn = seatNo == null ? null : seatNo.trim().toUpperCase();
+        return reservationRepository.countValidHold(userId, scheduleId, sn, now) > 0;
+    }
 }
