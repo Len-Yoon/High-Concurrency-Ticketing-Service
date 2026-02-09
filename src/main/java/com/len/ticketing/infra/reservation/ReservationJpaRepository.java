@@ -146,4 +146,18 @@ public interface ReservationJpaRepository extends JpaRepository<Reservation, Lon
                     @Param("seatNo") String seatNo,
                     @Param("now") LocalDateTime now);
 
+    @Query(value = """
+    SELECT COUNT(1)
+    FROM reservation r
+    WHERE r.user_id = :userId
+        AND r.schedule_id = :scheduleId
+        AND r.seat_no = :seatNo
+        AND r.status = 'HELD'
+        AND r.active = 1
+        AND r.expires_at > :now
+    """, nativeQuery = true)
+    int countValidHold(@Param("userId") Long userId,
+    @Param("scheduleId") Long scheduleId,
+    @Param("seatNo") String seatNo,
+    @Param("now") LocalDateTime now);
 }
