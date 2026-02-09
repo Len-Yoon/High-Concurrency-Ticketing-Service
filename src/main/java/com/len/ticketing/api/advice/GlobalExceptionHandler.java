@@ -7,6 +7,11 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.http.HttpStatus;
+
+import java.time.LocalDateTime;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 
 import java.time.LocalDateTime;
@@ -51,17 +56,16 @@ public class GlobalExceptionHandler {
     ) {}
 
     @ExceptionHandler(HttpMessageNotReadableException.class)
-    public ResponseEntity<ErrorResponse> handleHttpMessageNotReadable(
+    public ResponseEntity<Map<String, Object>> handleHttpMessageNotReadable(
             HttpMessageNotReadableException e,
             HttpServletRequest request
     ) {
-        ErrorResponse body = ErrorResponse.builder()
-                .timestamp(LocalDateTime.now())
-                .status(400)
-                .code("INVALID_JSON")
-                .message("요청 JSON 형식이 올바르지 않습니다.")
-                .path(request.getRequestURI())
-                .build();
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("timestamp", LocalDateTime.now());
+        body.put("status", 400);
+        body.put("code", "INVALID_JSON");
+        body.put("message", "요청 JSON 형식이 올바르지 않습니다.");
+        body.put("path", request.getRequestURI());
 
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
     }
