@@ -4,8 +4,10 @@ import com.len.ticketing.common.exception.BusinessException;
 import com.len.ticketing.common.exception.ErrorCode;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+
 
 import java.time.LocalDateTime;
 
@@ -47,4 +49,20 @@ public class GlobalExceptionHandler {
             String message,
             String path
     ) {}
+
+    @ExceptionHandler(HttpMessageNotReadableException.class)
+    public ResponseEntity<ErrorResponse> handleHttpMessageNotReadable(
+            HttpMessageNotReadableException e,
+            HttpServletRequest request
+    ) {
+        ErrorResponse body = ErrorResponse.builder()
+                .timestamp(LocalDateTime.now())
+                .status(400)
+                .code("INVALID_JSON")
+                .message("요청 JSON 형식이 올바르지 않습니다.")
+                .path(request.getRequestURI())
+                .build();
+
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
+    }
 }
