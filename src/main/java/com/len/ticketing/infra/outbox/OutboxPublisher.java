@@ -32,6 +32,8 @@ public class OutboxPublisher {
     @Scheduled(fixedDelayString = "${ticketing.outbox.publish-interval-ms:300}")
     @Transactional
     public void publish() {
+        meterRegistry.counter("ticketing.outbox.publish.tick").increment();
+
         final long startNs = System.nanoTime();
 
         int success = 0;
