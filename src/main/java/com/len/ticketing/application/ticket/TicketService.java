@@ -33,7 +33,7 @@ public class TicketService {
     private final SeatSseHub seatSseHub;
 
     /**
-     * ✅ 로컬/부하테스트에서 큐 게이트를 끌 수 있는 스위치
+     * 로컬/부하테스트에서 큐 게이트를 끌 수 있는 스위치
      * - 기본값 true (운영 안전)
      */
     @Value("${ticketing.queue.enabled:true}")
@@ -44,11 +44,7 @@ public class TicketService {
      * - 여기서는 트랜잭션을 잡지 않는다.
      * - DB hold는 ReservationService 쪽에서 짧게 트랜잭션으로 처리
      */
-    public HoldSeatResult holdSeat(Long scheduleId,
-                                   String seatNo,
-                                   Long userId,
-                                   boolean bypassQueue,
-                                   String queueToken) {
+    public HoldSeatResult holdSeat(Long scheduleId, String seatNo, Long userId, boolean bypassQueue, String queueToken) {
 
         long t0 = System.nanoTime();
 
@@ -59,7 +55,7 @@ public class TicketService {
         String sn = seatNo.trim().toUpperCase();
         long t1 = System.nanoTime();
 
-        // ✅ Queue Gate (PASS 토큰 기반)
+        // Queue Gate (PASS 토큰 기반)
         if (queueEnabled && !bypassQueue) {
             // 토큰이 없으면: 큐에는 넣어주되, hold는 막는다 (클라이언트가 /queue/enter로 토큰 받아야 함)
             if (queueToken == null || queueToken.isBlank()) {
@@ -139,6 +135,27 @@ public class TicketService {
         }
     }
 
+    // seatId 기반 hold (신규)
+    public HoldSeatResult holdSeatById(
+            Long scheduleId,
+            Long seatId,
+            Long userId,
+            boolean bypassQueue,
+            String queueToken
+    ) {
+        if (scheduleId == null || seatId == null || userId == null) {
+            throw new BusinessException(ErrorCode.INVALID_REQUEST);
+        }
+
+        String seatNo = findSeatNoByScheduleAndSeatId(scheduleId, seatId);
+        return holdSeat(scheduleId, seatNo, userId, bypassQueue, queueToken);
+    }
+
+    private String findSeatNoByScheduleAndSeatId(Long scheduleId, Long seatId) {
+        return seatRepository.findSeatNoByScheduleIdAndSeatId(scheduleId, seatId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.SEAT_NOT_FOUND));
+    }
+
     @Transactional
     public void releaseSeat(Long scheduleId, String seatNo, Long userId) {
         if (scheduleId == null || userId == null || seatNo == null || seatNo.isBlank()) {
@@ -155,7 +172,7 @@ public class TicketService {
             @Override
             public void afterCommit() {
 
-                // ✅ pass 회수 (다음 사람 전진 가속)
+                // pass 회수 (다음 사람 전진 가속)
                 try {
                     queueStore.releasePass(sid, uid);
                 } catch (Exception ignored) {}
@@ -211,7 +228,7 @@ public class TicketService {
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                // ✅ pass 회수 (다음 사람 전진 가속)
+                // pass 회수 (다음 사람 전진 가속)
                 try {
                     queueStore.releasePass(sid, uid);
                 } catch (Exception ignored) {}
