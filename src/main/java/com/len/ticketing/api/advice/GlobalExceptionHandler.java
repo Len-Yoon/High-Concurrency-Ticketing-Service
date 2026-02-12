@@ -3,6 +3,7 @@ package com.len.ticketing.api.advice;
 import com.len.ticketing.common.exception.BusinessException;
 import com.len.ticketing.common.exception.ErrorCode;
 import jakarta.servlet.http.HttpServletRequest;
+import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -68,5 +69,27 @@ public class GlobalExceptionHandler {
         body.put("path", request.getRequestURI());
 
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
+    }
+
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<Map<String, Object>> handleMethodArgumentNotValid(
+            MethodArgumentNotValidException e,
+            HttpServletRequest request
+    ) {
+        String msg = e.getBindingResult().getAllErrors().stream()
+                .findFirst()
+                .map(err -> err.getDefaultMessage())
+                .orElse("요청 값이 올바르지 않습니다.");
+
+        ErrorCode ec = ErrorCode.INVALID_REQUEST;
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("timestamp", LocalDateTime.now());
+        body.put("status", ec.getStatus().value());
+        body.put("code", ec.getCode());
+        body.put("message", msg);
+        body.put("path", request.getRequestURI());
+
+        return ResponseEntity.status(ec.getStatus()).body(body);
     }
 }

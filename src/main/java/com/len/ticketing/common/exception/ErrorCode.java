@@ -30,4 +30,9 @@ public enum ErrorCode {
     private final HttpStatus httpStatus;
     private final String code;
     private final String message;
+
+    // 기존 코드에서 ec.getStatus()를 쓰고 있으니 호환용으로 유지
+    public HttpStatus getStatus() {
+        return httpStatus;
+    }
 }

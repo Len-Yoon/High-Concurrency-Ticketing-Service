@@ -16,27 +16,15 @@ public class ReservationController {
 
     @PostMapping("/hold")
     public HoldSeatResponse hold(
-            @Valid @RequestBody HoldSeatRequest request,
+            @Valid @RequestBody HoldSeatRequest request,   // <= @Valid 꼭 추가
             @RequestHeader(value = "X-LOADTEST-BYPASS", required = false) String bypass,
             @RequestHeader(value = "X-QUEUE-TOKEN", required = false) String queueToken
     ) {
         boolean bypassQueue = "true".equalsIgnoreCase(bypass);
 
         var result = (request.seatId() != null)
-                ? ticketService.holdSeatById(
-                request.scheduleId(),
-                request.seatId(),
-                request.userId(),
-                bypassQueue,
-                queueToken
-        )
-                : ticketService.holdSeat(
-                request.scheduleId(),
-                request.seatNo(),
-                request.userId(),
-                bypassQueue,
-                queueToken
-        );
+                ? ticketService.holdSeatById(request.scheduleId(), request.seatId(), request.userId(), bypassQueue, queueToken)
+                : ticketService.holdSeat(request.scheduleId(), request.seatNo(), request.userId(), bypassQueue, queueToken);
 
         return new HoldSeatResponse(result.success(), result.message());
     }
