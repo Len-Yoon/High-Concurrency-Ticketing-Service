@@ -7,8 +7,8 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
-@RestController
 @RequiredArgsConstructor
+@RestController
 @RequestMapping("/api/reservations")
 public class ReservationController {
 
@@ -16,16 +16,25 @@ public class ReservationController {
 
     @PostMapping("/hold")
     public HoldSeatResponse hold(
-            @Valid @RequestBody HoldSeatRequest request,   // <= @Valid 꼭 추가
+            @Valid @RequestBody HoldSeatRequest request,
             @RequestHeader(value = "X-LOADTEST-BYPASS", required = false) String bypass,
             @RequestHeader(value = "X-QUEUE-TOKEN", required = false) String queueToken
     ) {
-        boolean bypassQueue = "true".equalsIgnoreCase(bypass);
+        boolean bypassQueue = "true".equalsIgnoreCase(bypass)
+                || Boolean.TRUE.equals(request.bypassQueue());
+
+        String token = (request.queueToken() != null && !request.queueToken().isBlank())
+                ? request.queueToken()
+                : queueToken;
 
         var result = (request.seatId() != null)
-                ? ticketService.holdSeatById(request.scheduleId(), request.seatId(), request.userId(), bypassQueue, queueToken)
-                : ticketService.holdSeat(request.scheduleId(), request.seatNo(), request.userId(), bypassQueue, queueToken);
+                ? ticketService.holdSeatById(
+                request.scheduleId(), request.seatId(), request.userId(), bypassQueue, token
+        )
+                : ticketService.holdSeat(
+                request.scheduleId(), request.seatNo(), request.userId(), bypassQueue, token
+        );
 
-        return new HoldSeatResponse(result.success(), result.message());
+        return new HoldSeatResponse(result.success(), result.message(), result.reservationId());
     }
 }

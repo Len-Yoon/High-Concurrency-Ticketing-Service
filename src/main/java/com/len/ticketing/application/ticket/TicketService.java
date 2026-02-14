@@ -8,7 +8,6 @@ import com.len.ticketing.domain.ticket.SeatLockStore;
 import com.len.ticketing.infra.concert.SeatJpaRepository;
 import com.len.ticketing.infra.sse.SeatChangedEvent;
 import com.len.ticketing.infra.sse.SeatSseHub;
-import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.CannotAcquireLockException;
 import org.springframework.dao.DeadlockLoserDataAccessException;
@@ -20,7 +19,6 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import jakarta.annotation.PostConstruct;
 import java.time.LocalDateTime;
 
-@RequiredArgsConstructor
 @Service
 public class TicketService {
 
@@ -32,20 +30,24 @@ public class TicketService {
     private final ReservationService reservationService;
     private final SeatSseHub seatSseHub;
 
-    /**
-     * 로컬/부하테스트에서 큐 게이트를 끌 수 있는 스위치
-     * - 기본값 true (운영 안전)
-     */
+    public TicketService(
+            SeatJpaRepository seatRepository,
+            QueueStore queueStore,
+            SeatLockStore seatLockStore,
+            ReservationService reservationService,
+            SeatSseHub seatSseHub
+    ) {
+        this.seatRepository = seatRepository;
+        this.queueStore = queueStore;
+        this.seatLockStore = seatLockStore;
+        this.reservationService = reservationService;
+        this.seatSseHub = seatSseHub;
+    }
+
     @Value("${ticketing.queue.enabled:true}")
     private boolean queueEnabled;
 
-    /**
-     * holdSeat:
-     * - 여기서는 트랜잭션을 잡지 않는다.
-     * - DB hold는 ReservationService 쪽에서 짧게 트랜잭션으로 처리
-     */
-    public HoldSeatResult holdSeat(Long scheduleId, String seatNo, Long userId, boolean bypassQueue, String queueToken) {
-
+    public HoldResult holdSeat(Long scheduleId, String seatNo, Long userId, boolean bypassQueue, String queueToken) {
         long t0 = System.nanoTime();
 
         if (scheduleId == null || userId == null || seatNo == null || seatNo.isBlank()) {
@@ -55,9 +57,8 @@ public class TicketService {
         String sn = seatNo.trim().toUpperCase();
         long t1 = System.nanoTime();
 
-        // Queue Gate (PASS 토큰 기반)
+        // Queue Gate
         if (queueEnabled && !bypassQueue) {
-            // 토큰이 없으면: 큐에는 넣어주되, hold는 막는다 (클라이언트가 /queue/enter로 토큰 받아야 함)
             if (queueToken == null || queueToken.isBlank()) {
                 if (queueStore.getPosition(scheduleId, userId) == -1L) {
                     queueStore.enterQueue(scheduleId, userId);
@@ -65,7 +66,6 @@ public class TicketService {
                 throw new BusinessException(ErrorCode.QUEUE_NOT_ALLOWED);
             }
 
-            // 토큰 검증 실패
             if (!queueStore.validatePass(scheduleId, userId, queueToken)) {
                 if (queueStore.getPosition(scheduleId, userId) == -1L) {
                     queueStore.enterQueue(scheduleId, userId);
@@ -108,12 +108,16 @@ public class TicketService {
         try {
             for (int attempt = 1; attempt <= maxAttempts; attempt++) {
                 try {
-                    reservationService.hold(userId, scheduleId, sn);
+                    // ReservationService.hold(...) returns Reservation
+                    var saved = reservationService.hold(userId, scheduleId, sn);
+                    Long reservationId = saved.getId();
 
-                    publishAfterCommit(scheduleId,
-                            new SeatChangedEvent("HELD", scheduleId, sn, true, userId, LocalDateTime.now()));
+                    publishAfterCommit(
+                            scheduleId,
+                            new SeatChangedEvent("HELD", scheduleId, sn, true, userId, LocalDateTime.now())
+                    );
 
-                    return new HoldSeatResult(true, "좌석 선점에 성공했습니다. 결제를 진행해주세요.");
+                    return new HoldResult(true, "좌석 선점에 성공했습니다. 결제를 진행해주세요.", reservationId);
 
                 } catch (CannotAcquireLockException | DeadlockLoserDataAccessException e) {
                     if (attempt == maxAttempts) throw e;
@@ -127,7 +131,7 @@ public class TicketService {
                 }
             }
 
-            return new HoldSeatResult(false, "좌석 선점에 실패했습니다.");
+            return new HoldResult(false, "좌석 선점에 실패했습니다.", null);
 
         } catch (RuntimeException e) {
             seatLockStore.releaseSeat(scheduleId, sn, userId);
@@ -135,8 +139,7 @@ public class TicketService {
         }
     }
 
-    // seatId 기반 hold (신규)
-    public HoldSeatResult holdSeatById(
+    public HoldResult holdSeatById(
             Long scheduleId,
             Long seatId,
             Long userId,
@@ -171,8 +174,6 @@ public class TicketService {
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-
-                // pass 회수 (다음 사람 전진 가속)
                 try {
                     queueStore.releasePass(sid, uid);
                 } catch (Exception ignored) {}
@@ -228,7 +229,6 @@ public class TicketService {
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
-                // pass 회수 (다음 사람 전진 가속)
                 try {
                     queueStore.releasePass(sid, uid);
                 } catch (Exception ignored) {}
@@ -264,7 +264,11 @@ public class TicketService {
         }
     }
 
-    public record HoldSeatResult(boolean success, String message) {}
+    public record HoldResult(
+            boolean success,
+            String message,
+            Long reservationId
+    ) {}
 
     @PostConstruct
     public void init() {
