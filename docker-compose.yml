@@ -1,42 +1,33 @@
-version: "3.8"
+name: ticketing-dev
 
 services:
   mysql:
-    image: mysql:8.0
+    image: mysql:8.4
     container_name: ticketing-mysql
     environment:
-      MYSQL_ROOT_PASSWORD: root1234
+      MYSQL_ROOT_PASSWORD: root
       MYSQL_DATABASE: ticketing
-      MYSQL_USER: ticket
-      MYSQL_PASSWORD: ticket1234
       TZ: Asia/Seoul
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
     ports:
-      - "3307:3306"
-    command: >
-      --character-set-server=utf8mb4
-      --collation-server=utf8mb4_unicode_ci
+      - "3306:3306"
     volumes:
-      - mysql-data:/var/lib/mysql
-    healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -proot1234 --silent"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
+      - mysql_data:/var/lib/mysql
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.2-alpine
     container_name: ticketing-redis
+    command: ["redis-server", "--appendonly", "yes"]
     ports:
       - "6379:6379"
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 3s
-      retries: 10
+    volumes:
+      - redis_data:/data
 
   redpanda:
-    image: redpandadata/redpanda:v24.1.9
-    container_name: ticketing-kafka
+    image: redpandadata/redpanda:v24.1.11
+    container_name: ticketing-redpanda
     command:
       - redpanda
       - start
@@ -46,37 +37,56 @@ services:
       - --reserve-memory=0M
       - --node-id=0
       - --check=false
-      - --kafka-addr=PLAINTEXT://0.0.0.0:9092
-      - --advertise-kafka-addr=PLAINTEXT://localhost:9092
-      - --set
-      - redpanda.auto_create_topics_enabled=true
+      - --kafka-addr=PLAINTEXT://0.0.0.0:9092,OUTSIDE://0.0.0.0:19092
+      - --advertise-kafka-addr=PLAINTEXT://redpanda:9092,OUTSIDE://localhost:19092
     ports:
-      - "9092:9092"   # Spring Kafka bootstrap-servers
-      - "9644:9644"   # Admin API
-    volumes:
-      - redpanda-data:/var/lib/redpanda/data
-    healthcheck:
-      test: ["CMD-SHELL", "rpk cluster info -X brokers=127.0.0.1:9092 >/dev/null 2>&1 || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 20
+      - "9092:9092"
+      - "19092:19092"
+      - "9644:9644"
 
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: ticketing-prometheus
-    ports:
-      - "9090:9090"
+  backend:
+    image: gradle:8.10.2-jdk17
+    container_name: ticketing-backend
+    working_dir: /workspace
     volumes:
-      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-
-  grafana:
-    image: grafana/grafana-oss:latest
-    container_name: ticketing-grafana
-    ports:
-      - "3000:3000"
+      - ./:/workspace
+      - gradle_cache:/home/gradle/.gradle
+    environment:
+      SPRING_PROFILES_ACTIVE: local
+      TICKETING_QUEUE_ENABLED: "false"
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/ticketing?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: root
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: "6379"
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
+    command: ["bash", "-lc", "chmod +x gradlew && ./gradlew bootRun --no-daemon"]
     depends_on:
-      - prometheus
+      - mysql
+      - redis
+      - redpanda
+    ports:
+      - "8080:8080"
+
+  frontend:
+    image: node:20-alpine
+    container_name: ticketing-frontend
+    working_dir: /workspace
+    volumes:
+      - ./ticketing-ui:/workspace
+      - node_modules:/workspace/node_modules
+    environment:
+      CHOKIDAR_USEPOLLING: "true"
+      # 프론트 코드에서 사용 중이면 유지, 아니면 무시됨
+      VITE_API_BASE_URL: http://localhost:8080
+    command: ["sh", "-lc", "npm ci && npm run dev -- --host 0.0.0.0 --port 5173"]
+    depends_on:
+      - backend
+    ports:
+      - "5173:5173"
 
 volumes:
-  mysql-data:
-  redpanda-data:
+  mysql_data:
+  redis_data:
+  gradle_cache:
+  node_modules:
