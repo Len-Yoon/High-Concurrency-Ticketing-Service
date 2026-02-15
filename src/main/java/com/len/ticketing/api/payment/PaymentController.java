@@ -15,7 +15,6 @@ public class PaymentController {
 
     private final PaymentService paymentService;
 
-    // 1) 결제 준비
     @PostMapping("/ready")
     public PaymentReadyResponse ready(@RequestBody PaymentReadyRequest request) {
         var result = paymentService.ready(
@@ -30,7 +29,6 @@ public class PaymentController {
         );
     }
 
-    // 2) 모의 결제 성공 콜백
     @PostMapping("/mock-success")
     public PaymentResultResponse mockSuccess(@RequestBody PaymentMockSuccessRequest request) {
         var result = paymentService.mockSuccess(request.orderNo());
