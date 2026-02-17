@@ -37,7 +37,10 @@ public class ConfirmRequestedConsumer {
     @Value("${ticketing.confirm.max-event-age-seconds:120}")
     private long maxEventAgeSeconds;
 
-    @KafkaListener(topics = "ticket.confirm.requested.v1", groupId = "ticketing-confirm-v1")
+    @KafkaListener(
+            topics = "ticket.confirm.requested.v1",
+            groupId = "${spring.kafka.consumer.group-id}"
+    )
     public void onMessage(String payload) {
         ConfirmRequestedPayload evt;
 
