@@ -2,8 +2,14 @@ ticketing:
   queue:
     enabled: true
 
+spring:
+  kafka:
+    consumer:
+      group-id: ticketing-confirm-local-20260217
+      auto-offset-reset: latest
+
 management:
   endpoints:
     web:
       exposure:
-        include: health,info,mappings,prometheus
+        include: "health,info,mappings,prometheus"
