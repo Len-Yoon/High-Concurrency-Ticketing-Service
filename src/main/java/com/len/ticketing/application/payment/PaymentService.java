@@ -1,18 +1,18 @@
 package com.len.ticketing.application.payment;
 
+import com.len.ticketing.application.reservation.ReservationService;
 import com.len.ticketing.common.exception.BusinessException;
 import com.len.ticketing.common.exception.ErrorCode;
 import com.len.ticketing.domain.concert.Seat;
 import com.len.ticketing.domain.payment.PaymentOrder;
 import com.len.ticketing.domain.payment.PaymentStatus;
-import com.len.ticketing.domain.reservation.Reservation;
 import com.len.ticketing.domain.reservation.ReservationStatus;
 import com.len.ticketing.infra.concert.SeatJpaRepository;
 import com.len.ticketing.infra.payment.PaymentOrderJpaRepository;
 import com.len.ticketing.infra.reservation.ReservationJpaRepository;
-import com.len.ticketing.application.reservation.ReservationService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
@@ -41,12 +41,18 @@ public class PaymentService {
                 .orElseThrow(() -> new BusinessException(ErrorCode.SEAT_NOT_FOUND));
 
         // 2) DB 홀드(HELD, active=1, 만료 전) + 소유자 확인
-        Reservation r = reservationRepository.findActiveForUpdate(scheduleId, sn)
+        var r = reservationRepository.findActiveForUpdate(scheduleId, sn)
                 .orElseThrow(() -> new BusinessException(ErrorCode.HOLD_NOT_FOUND));
 
-        if (!r.getUserId().equals(userId)) throw new BusinessException(ErrorCode.NOT_SEAT_OWNER);
-        if (r.getStatus() != ReservationStatus.HELD) throw new BusinessException(ErrorCode.HOLD_NOT_FOUND);
-        if (r.getExpiresAt() != null && !r.getExpiresAt().isAfter(now)) throw new BusinessException(ErrorCode.HOLD_EXPIRED);
+        if (!r.getUserId().equals(userId)) {
+            throw new BusinessException(ErrorCode.NOT_SEAT_OWNER);
+        }
+        if (r.getStatus() != ReservationStatus.HELD) {
+            throw new BusinessException(ErrorCode.HOLD_NOT_FOUND);
+        }
+        if (r.getExpiresAt() != null && !r.getExpiresAt().isAfter(now)) {
+            throw new BusinessException(ErrorCode.HOLD_EXPIRED);
+        }
 
         // 3) 결제 주문 생성
         String orderNo = "PO-" + UUID.randomUUID();
@@ -56,7 +62,12 @@ public class PaymentService {
         return new PaymentReadyResult(orderNo, seat.getPrice(), "결제 준비 완료");
     }
 
-    @Transactional
+    /**
+     * 핵심:
+     * - 기존 UnexpectedRollbackException 방지를 위해 바깥 트랜잭션을 사용하지 않음
+     * - confirm()에서 실패해도 catch 후 취소 상태 저장 가능
+     */
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public PaymentResult mockSuccess(String orderNo) {
         if (orderNo == null || orderNo.isBlank()) {
             throw new BusinessException(ErrorCode.INVALID_REQUEST);
@@ -70,25 +81,38 @@ public class PaymentService {
         }
 
         try {
-            // 1) hold -> confirmed
+            // 1) hold -> confirmed (reservationService.confirm 내부 트랜잭션 사용)
             reservationService.confirm(order.getUserId(), order.getScheduleId(), order.getSeatNo());
 
             // 2) 결제 완료 처리
             order.markPaid();
             order.setUpdatedAt(LocalDateTime.now());
+            paymentOrderRepository.saveAndFlush(order);
 
             return new PaymentResult(true, "예매 확정 완료");
         } catch (BusinessException e) {
-            order.markCancelled(e.getMessage());
-            order.setUpdatedAt(LocalDateTime.now());
+            markCancelledSafely(order, e.getMessage());
             return new PaymentResult(false, e.getMessage());
         } catch (RuntimeException e) {
-            order.markCancelled(e.getMessage());
-            order.setUpdatedAt(LocalDateTime.now());
+            markCancelledSafely(order, e.getMessage());
             return new PaymentResult(false, "예매 확정 실패: " + e.getMessage());
         }
     }
 
-    public record PaymentReadyResult(String orderNo, int amount, String message) {}
-    public record PaymentResult(boolean success, String message) {}
+    private void markCancelledSafely(PaymentOrder order, String reason) {
+        try {
+            String failReason = (reason == null || reason.isBlank()) ? "예매 확정 실패" : reason;
+            order.markCancelled(failReason);
+            order.setUpdatedAt(LocalDateTime.now());
+            paymentOrderRepository.saveAndFlush(order);
+        } catch (Exception ignored) {
+            // 취소 저장 실패는 원래 예외를 덮지 않기 위해 무시
+        }
+    }
+
+    public record PaymentReadyResult(String orderNo, int amount, String message) {
+    }
+
+    public record PaymentResult(boolean success, String message) {
+    }
 }

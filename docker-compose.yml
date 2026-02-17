@@ -58,6 +58,8 @@ services:
     environment:
       SPRING_PROFILES_ACTIVE: local
       TICKETING_QUEUE_ENABLED: "false"
+      SPRING_KAFKA_CONSUMER_GROUP_ID: ticketing-confirm-local-20260217
+      SPRING_KAFKA_CONSUMER_AUTO_OFFSET_RESET: latest
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/ticketing?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul
       SPRING_DATASOURCE_USERNAME: root
       SPRING_DATASOURCE_PASSWORD: root
@@ -67,7 +69,7 @@ services:
       SPRING_JPA_HIBERNATE_DDL_AUTO: update
       SPRING_SQL_INIT_MODE: always
       SPRING_JPA_DEFER_DATASOURCE_INITIALIZATION: "true"
-    command: ["bash", "-lc", "chmod +x gradlew && ./gradlew bootRun --no-daemon"]
+    command: ["bash", "-lc", "chmod +x gradlew && ./gradlew --no-daemon bootRun --stacktrace"]
     depends_on:
       - mysql
       - redis
