@@ -1,13 +1,13 @@
--- KEYS[1] = waitingZsetKey
--- KEYS[2] = passZsetKey
+-- KEYS[1] = waitingZsetKey          (queue:{scheduleId})
+-- KEYS[2] = passZsetKey             (queue:pass:z:{scheduleId})
 -- ARGV[1] = nowMs
 -- ARGV[2] = capacity
 -- ARGV[3] = passTtlMs
--- ARGV[4] = tokenKeyPrefix   (e.g. "queue:token:12:")
--- ARGV[5] = tokenSeqKey      (e.g. "queue:token:seq:12")
+-- ARGV[4] = tokenKeyPrefix          (queue:pass:{scheduleId}:)
+-- ARGV[5] = tokenSeqKey             (queue:pass:seq:{scheduleId})
 
 local waitingKey = KEYS[1]
-local passKey = KEYS[2]
+local passZKey = KEYS[2]
 
 local nowMs = tonumber(ARGV[1])
 local capacity = tonumber(ARGV[2])
@@ -16,11 +16,11 @@ local passTtlMs = tonumber(ARGV[3])
 local tokenKeyPrefix = ARGV[4]
 local tokenSeqKey = ARGV[5]
 
--- 1) expire된 pass 정리
-redis.call('ZREMRANGEBYSCORE', passKey, 0, nowMs)
+-- 1) 만료된 pass 정리 (score=expireAtMs)
+redis.call('ZREMRANGEBYSCORE', passZKey, 0, nowMs)
 
 -- 2) 남은 자리 계산
-local passCount = tonumber(redis.call('ZCARD', passKey))
+local passCount = tonumber(redis.call('ZCARD', passZKey))
 local deficit = capacity - passCount
 if deficit <= 0 then
   return 0
@@ -37,14 +37,13 @@ for i=1, deficit do
   local userId = popped[1]
   local expireAt = nowMs + passTtlMs
 
-  -- 3) pass 등록 (만료 시각을 score로)
-  redis.call('ZADD', passKey, expireAt, userId)
+  -- 3) pass 인원 등록
+  redis.call('ZADD', passZKey, expireAt, userId)
 
-  -- 4) token 발급 + TTL 세팅
+  -- 4) token 발급 + TTL
   local seq = redis.call('INCR', tokenSeqKey)
   local token = tostring(nowMs) .. ":" .. tostring(seq) .. ":" .. userId
-  local tokenKey = tokenKeyPrefix .. userId
-  redis.call('SET', tokenKey, token, 'PX', passTtlMs)
+  redis.call('SET', tokenKeyPrefix .. userId, token, 'PX', passTtlMs)
 
   advanced = advanced + 1
 end
