@@ -4,9 +4,10 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.data.redis.core.Cursor;
+import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ScanOptions;
-import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -29,20 +30,17 @@ public class QueueAdvancer {
     @org.springframework.beans.factory.annotation.Value("${ticketing.queue.pass-ttl-seconds:300}")
     private int passTtlSeconds;
 
-    @org.springframework.beans.factory.annotation.Value("${ticketing.queue.advance-interval-ms:200}")
-    private long intervalMs;
-
     @org.springframework.beans.factory.annotation.Value("${ticketing.queue.advance-lock-ttl-ms:5000}")
     private long lockTtlMs;
 
     @org.springframework.beans.factory.annotation.Value("${ticketing.queue.advance-engine:lua}")
     private String engineName;
 
-    // waiting key는 "queue:{scheduleId}"라서 패턴은 queue:* 로 스캔 후 필터링
+    // waiting key는 "queue:{scheduleId}"라서 queue:* 스캔 후 필터링
     @org.springframework.beans.factory.annotation.Value("${ticketing.queue.waiting-scan-pattern:queue:*}")
     private String scanPattern;
 
-    private final DefaultRedisScript<Long> unlockScript = new DefaultRedisScript<>(
+    private final RedisScript<Long> unlockScript = RedisScript.of(
             "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end",
             Long.class
     );
@@ -51,7 +49,10 @@ public class QueueAdvancer {
     public void advanceTick() {
         String lockVal = UUID.randomUUID().toString();
         Boolean locked = redis.opsForValue().setIfAbsent(
-                QueueRedisKeys.ADVANCE_LOCK_KEY, lockVal, lockTtlMs, TimeUnit.MILLISECONDS
+                QueueRedisKeys.ADVANCE_LOCK_KEY,
+                lockVal,
+                lockTtlMs,
+                TimeUnit.MILLISECONDS
         );
         if (locked == null || !locked) return;
 
@@ -73,7 +74,6 @@ public class QueueAdvancer {
         } catch (Exception e) {
             log.warn("[QueueAdvancer] failed", e);
         } finally {
-            // owner-check unlock
             redis.execute(unlockScript, List.of(QueueRedisKeys.ADVANCE_LOCK_KEY), lockVal);
         }
     }
@@ -91,25 +91,26 @@ public class QueueAdvancer {
     private Set<Long> scanActiveScheduleIds() {
         Set<Long> ids = new HashSet<>();
 
-        redis.execute(connection -> {
-            try (Cursor<byte[]> cursor = connection.scan(
+        redis.execute((RedisCallback<Void>) connection -> {
+            // Spring Data Redis 3.x 기준 안전한 scan
+            try (Cursor<byte[]> cursor = connection.keyCommands().scan(
                     ScanOptions.scanOptions().match(scanPattern).count(500).build()
             )) {
                 while (cursor.hasNext()) {
                     String key = new String(cursor.next(), StandardCharsets.UTF_8);
 
-                    // waiting key만: "queue:{digits}" 형태만 허용 (pass 키들 제외)
+                    // waiting key만: "queue:{digits}" 형태 허용 (pass 키 제외)
                     if (!key.startsWith(QueueRedisKeys.QUEUE_PREFIX)) continue;
 
                     String tail = key.substring(QueueRedisKeys.QUEUE_PREFIX.length());
                     if (tail.isBlank()) continue;
 
-                    // "queue:12"는 OK, "queue:pass:z:12"는 tail에 ':' 포함 → 제외
+                    // "queue:12"는 OK, "queue:pass:z:12"는 ':' 포함 → 제외
                     if (tail.indexOf(':') != -1) continue;
 
                     try {
                         ids.add(Long.parseLong(tail));
-                    } catch (NumberFormatException ignored) {}
+                    } catch (NumberFormatException ignored) { }
                 }
             }
             return null;

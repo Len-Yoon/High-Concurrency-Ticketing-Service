@@ -15,13 +15,14 @@ public class JavaQueueAdvanceEngine implements QueueAdvanceEngine {
     private final StringRedisTemplate redis;
 
     @Override
-    public int advance(long scheduleId, long nowMs, int capacity, long passTtlSeconds) {
+    public int advance(long scheduleId, long nowMs, int capacity, int passTtlSeconds) {
         String waitingKey = QueueRedisKeys.waitingKey(scheduleId);
         String passZKey = QueueRedisKeys.passZKey(scheduleId);
 
-        // 만료 정리 (score=expireAtMs)
+        // 1) 만료 pass 정리
         redis.opsForZSet().removeRangeByScore(passZKey, 0, nowMs);
 
+        // 2) 남은 자리
         Long passCount = redis.opsForZSet().zCard(passZKey);
         int deficit = capacity - (passCount == null ? 0 : passCount.intValue());
         if (deficit <= 0) return 0;
@@ -43,6 +44,7 @@ public class JavaQueueAdvanceEngine implements QueueAdvanceEngine {
 
             advanced++;
         }
+
         return advanced;
     }
 

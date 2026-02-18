@@ -20,7 +20,7 @@ public class LuaQueueAdvanceEngine implements QueueAdvanceEngine {
     }};
 
     @Override
-    public int advance(long scheduleId, long nowMs, int capacity, long passTtlSeconds) {
+    public int advance(long scheduleId, long nowMs, int capacity, int passTtlSeconds) {
         long passTtlMs = passTtlSeconds * 1000L;
 
         Long advanced = redis.execute(
