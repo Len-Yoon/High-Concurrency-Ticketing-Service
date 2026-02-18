@@ -1,5 +1,5 @@
--- KEYS[1] = waitingZset
--- KEYS[2] = passZset
+-- KEYS[1] = waitingZsetKey
+-- KEYS[2] = passZsetKey
 -- ARGV[1] = nowMs
 -- ARGV[2] = capacity
 -- ARGV[3] = passTtlMs
@@ -23,7 +23,7 @@ redis.call('ZREMRANGEBYSCORE', passKey, 0, nowMs)
 local passCount = tonumber(redis.call('ZCARD', passKey))
 local deficit = capacity - passCount
 if deficit <= 0 then
-  return {0}
+  return 0
 end
 
 local advanced = 0
@@ -49,4 +49,4 @@ for i=1, deficit do
   advanced = advanced + 1
 end
 
-return {advanced}
+return advanced
