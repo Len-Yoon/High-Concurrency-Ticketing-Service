@@ -1,6 +1,6 @@
 ticketing:
   queue:
-    enabled: true
+    advance-interval-ms: 200
 
 spring:
   kafka:
