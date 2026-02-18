@@ -2,11 +2,9 @@ ticketing:
   queue:
     enabled: true
     advance-interval-ms: 200
-    advance-engine: lua        # lua | java
-    advance-lock-ttl-ms: 5000
     capacity: 100
     pass-ttl-seconds: 300
-    waiting-scan-pattern: "queue:*"
+    advance-engine: lua
 
 spring:
   kafka:

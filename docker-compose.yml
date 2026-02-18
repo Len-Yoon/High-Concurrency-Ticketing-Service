@@ -57,7 +57,7 @@ services:
       - gradle_cache:/home/gradle/.gradle
     environment:
       SPRING_PROFILES_ACTIVE: local
-      TICKETING_QUEUE_ENABLED: "false"
+      TICKETING_QUEUE_ENABLED: "true"
       SPRING_KAFKA_CONSUMER_GROUP_ID: ticketing-confirm-local-20260217
       SPRING_KAFKA_CONSUMER_AUTO_OFFSET_RESET: latest
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/ticketing?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul

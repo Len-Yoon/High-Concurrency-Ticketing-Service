@@ -1,12 +1,13 @@
 package com.len.ticketing.application.queue;
 
+import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.data.redis.core.Cursor;
 import org.springframework.data.redis.core.RedisCallback;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ScanOptions;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -36,17 +37,29 @@ public class QueueAdvancer {
     @org.springframework.beans.factory.annotation.Value("${ticketing.queue.advance-engine:lua}")
     private String engineName;
 
-    // waiting key는 "queue:{scheduleId}"라서 queue:* 스캔 후 필터링
     @org.springframework.beans.factory.annotation.Value("${ticketing.queue.waiting-scan-pattern:queue:*}")
     private String scanPattern;
+
+    @org.springframework.beans.factory.annotation.Value("${ticketing.queue.advance-debug-log:true}")
+    private boolean debugLog;
 
     private final RedisScript<Long> unlockScript = RedisScript.of(
             "if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end",
             Long.class
     );
 
+    @PostConstruct
+    public void onInit() {
+        log.info("[QueueAdvancer] bean created. engineName={}, capacity={}, passTtlSeconds={}, scanPattern={}, engines={}",
+                engineName, capacity, passTtlSeconds, scanPattern, engines.stream().map(QueueAdvanceEngine::name).toList());
+    }
+
     @Scheduled(fixedDelayString = "${ticketing.queue.advance-interval-ms:200}")
     public void advanceTick() {
+        if (debugLog) {
+            log.info("[QueueAdvancer] tick");
+        }
+
         String lockVal = UUID.randomUUID().toString();
         Boolean locked = redis.opsForValue().setIfAbsent(
                 QueueRedisKeys.ADVANCE_LOCK_KEY,
@@ -54,23 +67,29 @@ public class QueueAdvancer {
                 lockTtlMs,
                 TimeUnit.MILLISECONDS
         );
-        if (locked == null || !locked) return;
+        if (locked == null || !locked) {
+            if (debugLog) log.info("[QueueAdvancer] lock not acquired");
+            return;
+        }
 
         try {
             QueueAdvanceEngine engine = pickEngine(engineName);
             long nowMs = System.currentTimeMillis();
 
             Set<Long> scheduleIds = scanActiveScheduleIds();
+            if (debugLog) log.info("[QueueAdvancer] schedules={}", scheduleIds);
+
             if (scheduleIds.isEmpty()) return;
 
             int total = 0;
             for (long scheduleId : scheduleIds) {
-                total += engine.advance(scheduleId, nowMs, capacity, passTtlSeconds);
+                int advanced = engine.advance(scheduleId, nowMs, capacity, passTtlSeconds);
+                total += advanced;
+                if (debugLog) log.info("[QueueAdvancer] scheduleId={} advanced={}", scheduleId, advanced);
             }
 
-            if (total > 0) {
-                log.info("[QueueAdvancer] engine={}, schedules={}, advanced={}", engine.name(), scheduleIds.size(), total);
-            }
+            log.info("[QueueAdvancer] engine={}, schedules={}, advanced={}", engine.name(), scheduleIds.size(), total);
+
         } catch (Exception e) {
             log.warn("[QueueAdvancer] failed", e);
         } finally {
@@ -92,20 +111,18 @@ public class QueueAdvancer {
         Set<Long> ids = new HashSet<>();
 
         redis.execute((RedisCallback<Void>) connection -> {
-            // Spring Data Redis 3.x 기준 안전한 scan
             try (Cursor<byte[]> cursor = connection.keyCommands().scan(
                     ScanOptions.scanOptions().match(scanPattern).count(500).build()
             )) {
                 while (cursor.hasNext()) {
                     String key = new String(cursor.next(), StandardCharsets.UTF_8);
 
-                    // waiting key만: "queue:{digits}" 형태 허용 (pass 키 제외)
                     if (!key.startsWith(QueueRedisKeys.QUEUE_PREFIX)) continue;
 
                     String tail = key.substring(QueueRedisKeys.QUEUE_PREFIX.length());
                     if (tail.isBlank()) continue;
 
-                    // "queue:12"는 OK, "queue:pass:z:12"는 ':' 포함 → 제외
+                    // "queue:3"만 허용, "queue:pass:z:3" 같은 건 제외
                     if (tail.indexOf(':') != -1) continue;
 
                     try {
