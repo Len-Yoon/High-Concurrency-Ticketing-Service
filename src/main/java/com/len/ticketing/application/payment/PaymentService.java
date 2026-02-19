@@ -6,7 +6,6 @@ import com.len.ticketing.common.exception.ErrorCode;
 import com.len.ticketing.domain.concert.Seat;
 import com.len.ticketing.domain.payment.PaymentOrder;
 import com.len.ticketing.domain.payment.PaymentStatus;
-import com.len.ticketing.domain.reservation.ReservationStatus;
 import com.len.ticketing.infra.concert.SeatJpaRepository;
 import com.len.ticketing.infra.payment.PaymentOrderJpaRepository;
 import com.len.ticketing.infra.reservation.ReservationJpaRepository;
@@ -41,20 +40,17 @@ public class PaymentService {
                 .orElseThrow(() -> new BusinessException(ErrorCode.SEAT_NOT_FOUND));
 
         // 2) DB 홀드(HELD, active=1, 만료 전) + 소유자 확인
-        var r = reservationRepository.findActiveForUpdate(scheduleId, sn)
+        //    ❗️기존 findActiveForUpdate(scheduleId, seatNo)는
+        //    - CONFIRMED(active=1) + HELD(active=1) 같이 2개 이상이면 500(IncorrectResultSize) 터짐
+        //    - 타 유저의 active row를 잡아 NOT_SEAT_OWNER로 떨어지기도 함
+        //    => "해당 사용자"의 유효 HOLD 1건만(native + LIMIT 1)으로 고정
+        var r = reservationRepository.findLatestValidHoldForUpdate(userId, scheduleId, sn, now)
                 .orElseThrow(() -> new BusinessException(ErrorCode.HOLD_NOT_FOUND));
 
-        if (!r.getUserId().equals(userId)) {
-            throw new BusinessException(ErrorCode.NOT_SEAT_OWNER);
-        }
-        if (r.getStatus() != ReservationStatus.HELD) {
-            throw new BusinessException(ErrorCode.HOLD_NOT_FOUND);
-        }
-        if (r.getExpiresAt() != null && !r.getExpiresAt().isAfter(now)) {
-            throw new BusinessException(ErrorCode.HOLD_EXPIRED);
-        }
+        // (강추) 혹시 남아있는 중복 HELD를 여기서 정리(ready가 500으로 죽는 재발 방지)
+        reservationRepository.expireOtherActiveHolds(userId, scheduleId, sn, r.getId(), now);
 
-        // 3) 결제 주문 생성
+        // 3) 결제 주문 생성 (amount는 DB seat.price 기준으로 확정)
         String orderNo = "PO-" + UUID.randomUUID();
         PaymentOrder order = PaymentOrder.create(userId, scheduleId, sn, seat.getPrice(), orderNo);
         paymentOrderRepository.save(order);

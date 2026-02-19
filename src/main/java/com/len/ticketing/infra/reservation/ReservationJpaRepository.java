@@ -15,6 +15,7 @@ public interface ReservationJpaRepository extends JpaRepository<Reservation, Lon
 
     // =========================
     // 기존: 좌석 점유 row(락) - 남겨둠(다른 곳에서 쓸 수도 있으니)
+    // ⚠️ Payment.ready에서 이걸 쓰면 active row가 2개 이상일 때 500 터질 수 있음
     // =========================
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("""
@@ -25,6 +26,28 @@ public interface ReservationJpaRepository extends JpaRepository<Reservation, Lon
     """)
     Optional<Reservation> findActiveForUpdate(@Param("scheduleId") Long scheduleId,
                                               @Param("seatNo") String seatNo);
+
+    // =========================
+    // Payment ready용: "해당 사용자"의 유효 HOLD(HELD, active=1, 만료 전)만 1건 가져오기
+    // - native + ORDER BY + LIMIT 1(+FOR UPDATE)로 단건을 "강제"해서 500을 영구 차단
+    // =========================
+    @Query(value = """
+    SELECT *
+      FROM reservation
+     WHERE user_id     = :userId
+       AND schedule_id = :scheduleId
+       AND seat_no     = :seatNo
+       AND active      = 1
+       AND status      = 'HELD'
+       AND (expires_at IS NULL OR expires_at > :now)
+     ORDER BY id DESC
+     LIMIT 1
+     FOR UPDATE
+    """, nativeQuery = true)
+    Optional<Reservation> findLatestValidHoldForUpdate(@Param("userId") Long userId,
+                                                       @Param("scheduleId") Long scheduleId,
+                                                       @Param("seatNo") String seatNo,
+                                                       @Param("now") LocalDateTime now);
 
     // =========================
     // 좌석 상태조회용: 점유중인 좌석번호만(HELD는 미만료만)
@@ -57,7 +80,7 @@ public interface ReservationJpaRepository extends JpaRepository<Reservation, Lon
     int expireAll(@Param("now") LocalDateTime now);
 
     /**
-     * ✅ MySQL batch 만료 처리(부하 시 데드락/락경합 줄이기)
+     * MySQL batch 만료 처리(부하 시 데드락/락경합 줄이기)
      */
     @Modifying
     @Query(value = """
@@ -90,10 +113,31 @@ public interface ReservationJpaRepository extends JpaRepository<Reservation, Lon
      WHERE schedule_id = :scheduleId
        AND seat_no = :seatNo
        AND active = 1
+     ORDER BY id DESC
      LIMIT 1
     """, nativeQuery = true)
     ActiveLite findActiveLite(@Param("scheduleId") Long scheduleId,
                               @Param("seatNo") String seatNo);
+
+    // ===== (선택이지만 강추) 중복 HELD 정리: keepId 제외하고 나머지는 EXPIRED 처리 =====
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
+    @Query(value = """
+    UPDATE reservation
+       SET status = 'EXPIRED',
+           active = 0,
+           updated_at = :now
+     WHERE user_id     = :userId
+       AND schedule_id = :scheduleId
+       AND seat_no     = :seatNo
+       AND active      = 1
+       AND status      = 'HELD'
+       AND id <> :keepId
+    """, nativeQuery = true)
+    int expireOtherActiveHolds(@Param("userId") Long userId,
+                               @Param("scheduleId") Long scheduleId,
+                               @Param("seatNo") String seatNo,
+                               @Param("keepId") Long keepId,
+                               @Param("now") LocalDateTime now);
 
     @Modifying(flushAutomatically = true, clearAutomatically = true)
     @Query(value = """
@@ -157,7 +201,7 @@ public interface ReservationJpaRepository extends JpaRepository<Reservation, Lon
         AND r.expires_at > :now
     """, nativeQuery = true)
     int countValidHold(@Param("userId") Long userId,
-    @Param("scheduleId") Long scheduleId,
-    @Param("seatNo") String seatNo,
-    @Param("now") LocalDateTime now);
+                       @Param("scheduleId") Long scheduleId,
+                       @Param("seatNo") String seatNo,
+                       @Param("now") LocalDateTime now);
 }
