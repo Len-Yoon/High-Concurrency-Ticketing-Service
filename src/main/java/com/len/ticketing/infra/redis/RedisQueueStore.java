@@ -11,6 +11,7 @@ import org.springframework.stereotype.Component;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.TimeUnit;
 
 @RequiredArgsConstructor
 @Component
@@ -192,6 +193,8 @@ public class RedisQueueStore implements QueueStore {
         long expiresAt = Long.parseLong(Objects.toString(res.get(1), "0"));
 
         if (token.isBlank() || expiresAt <= 0) return null;
+
+        redisTemplate.opsForValue().set(passKey(scheduleId, userId), token, passTtlSeconds, TimeUnit.SECONDS);
         return new QueuePass(token, expiresAt);
     }
 
@@ -200,15 +203,20 @@ public class RedisQueueStore implements QueueStore {
         if (!queueEnabled) return true;
         if (token == null || token.isBlank()) return false;
 
-        String key = passKey(scheduleId, userId);
-        String stored = redisTemplate.opsForValue().get(key);
-        return token.equals(stored);
+        String pk = passKey(scheduleId, userId);
+        String stored = redisTemplate.opsForValue().get(pk);
+        if (stored != null) {
+            return stored.equals(token);
+        }
+
+        // backward/bug-safe fallback: passKey가 없더라도 passZKey에 살아있으면 통과
+        Double expMs = redisTemplate.opsForZSet().score(passZKey(scheduleId), String.valueOf(userId));
+        return expMs != null && expMs.longValue() > System.currentTimeMillis();
     }
 
     @Override
     public void releasePass(long scheduleId, long userId) {
-        // passKey 삭제 + passZ에서 제거
-        redisTemplate.delete(passKey(scheduleId, userId));
+        // passZ에서 제거
         redisTemplate.opsForZSet().remove(passZKey(scheduleId), String.valueOf(userId));
     }
 }
