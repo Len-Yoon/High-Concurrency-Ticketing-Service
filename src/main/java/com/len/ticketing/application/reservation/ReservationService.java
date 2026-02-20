@@ -50,16 +50,35 @@ public class ReservationService {
         try {
             Reservation hold = Reservation.newHold(userId, scheduleId, sn, now, HOLD_TTL);
 
-            // ✅ saveAndFlush 금지: 커밋 시 flush로 위임
+            // 핵심: saveAndFlush 금지 (flush 예외 후 세션 꼬임/AssertionFailure 방지)
+            // 커밋 시점에 flush 되도록 save()만 사용
             return reservationRepository.save(hold);
 
         } catch (DataIntegrityViolationException e) {
-            // ✅ A안: uk_reservation_active_seat 충돌이면 무조건 409로 끝
+            // A안: 유니크(좌석당 active=1 1건) 충돌이면 무조건 409로 종료
             if (isUkReservationActiveSeat(e)) {
                 throw new BusinessException(ErrorCode.SEAT_ALREADY_LOCKED); // HttpStatus.CONFLICT
             }
             throw e;
         }
+    }
+
+    private boolean isUkReservationActiveSeat(Throwable e) {
+        // 1) Hibernate ConstraintViolationException의 constraintName으로 식별
+        Throwable t = e;
+        while (t != null) {
+            if (t instanceof ConstraintViolationException cve) {
+                String name = cve.getConstraintName();
+                if (name != null && name.equalsIgnoreCase("uk_reservation_active_seat")) {
+                    return true;
+                }
+            }
+            t = t.getCause();
+        }
+
+        // 2) fallback: 메시지에 인덱스/제약 이름이 포함되는 경우
+        String msg = e.getMessage();
+        return msg != null && msg.contains("uk_reservation_active_seat");
     }
 
     // ---------- CONFIRM ----------
@@ -166,21 +185,5 @@ public class ReservationService {
         }
         String sn = seatNo.trim().toUpperCase();
         return reservationRepository.countValidHold(userId, scheduleId, sn, now) > 0;
-    }
-
-
-    private boolean isUkReservationActiveSeat(Throwable e) {
-        Throwable t = e;
-        while (t != null) {
-            if (t instanceof ConstraintViolationException cve) {
-                String name = cve.getConstraintName();
-                if (name != null && name.equalsIgnoreCase("uk_reservation_active_seat")) {
-                    return true;
-                }
-            }
-            t = t.getCause();
-        }
-        String msg = e.getMessage();
-        return msg != null && msg.contains("uk_reservation_active_seat");
     }
 }
