@@ -6,7 +6,6 @@ import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
-import java.util.UUID;
 
 @Component
 @RequiredArgsConstructor
@@ -17,17 +16,20 @@ public class JavaQueueAdvanceEngine implements QueueAdvanceEngine {
     @Override
     public int advance(long scheduleId, long nowMs, int capacity, int passTtlSeconds) {
         String waitingKey = QueueRedisKeys.waitingKey(scheduleId);
-        String passZKey = QueueRedisKeys.passZKey(scheduleId);
+        String passZKey    = QueueRedisKeys.passZKey(scheduleId);
+        String seqKey      = QueueRedisKeys.seqKey(scheduleId);
+        String tokenPrefix = QueueRedisKeys.tokenKeyPrefix(scheduleId); // "queue:pass:{sid}:"
 
         // 1) 만료 pass 정리
         redis.opsForZSet().removeRangeByScore(passZKey, 0, nowMs);
 
-        // 2) 남은 자리
+        // 2) 남은 자리 계산
         Long passCount = redis.opsForZSet().zCard(passZKey);
         int deficit = capacity - (passCount == null ? 0 : passCount.intValue());
         if (deficit <= 0) return 0;
 
         Duration ttl = Duration.ofSeconds(passTtlSeconds);
+        long expireAt = nowMs + passTtlSeconds * 1000L;
 
         int advanced = 0;
         for (int i = 0; i < deficit; i++) {
@@ -36,11 +38,16 @@ public class JavaQueueAdvanceEngine implements QueueAdvanceEngine {
 
             String userId = popped.getValue();
 
-            long expireAt = nowMs + passTtlSeconds * 1000L;
+            // (1) passZ: userId -> expiresAt
             redis.opsForZSet().add(passZKey, userId, expireAt);
 
-            String token = nowMs + ":" + UUID.randomUUID() + ":" + userId;
-            redis.opsForValue().set(QueueRedisKeys.tokenKeyPrefix(scheduleId) + userId, token, ttl);
+            // (2) token: {sid}:{userId}:{nowMs}:{seq}
+            Long seq = redis.opsForValue().increment(seqKey);
+            long s = (seq == null) ? 0L : seq;
+            String token = scheduleId + ":" + userId + ":" + nowMs + ":" + s;
+
+            // (3) passKey: queue:pass:{sid}:{userId}
+            redis.opsForValue().set(tokenPrefix + userId, token, ttl);
 
             advanced++;
         }
