@@ -3,7 +3,7 @@ ticketing:
     enabled: true
     capacity: 5
     pass-ttl-seconds: 300
-    advance-engine: lua
+    advance-engine: java
     waiting-scan-pattern: "queue:*"
     advance-interval-ms: 200
     advance-lock-ttl-ms: 5000
