@@ -10,14 +10,12 @@ import org.springframework.stereotype.Component;
 
 import java.util.List;
 import java.util.Objects;
-import java.util.Optional;
-import java.util.concurrent.TimeUnit;
 
 @RequiredArgsConstructor
 @Component
 public class RedisQueueStore implements QueueStore {
 
-    private final StringRedisTemplate redisTemplate;
+    private final StringRedisTemplate redis;
 
     @Value("${ticketing.queue.enabled:true}")
     private boolean queueEnabled;
@@ -39,42 +37,44 @@ public class RedisQueueStore implements QueueStore {
         return "queue:pass:seq:" + scheduleId;
     }
 
-    // ========== 기존: 대기열 ==========
+    // ========== Waiting queue ==========
     @Override
     public long enterQueue(long scheduleId, long userId) {
         String key = queueKey(scheduleId);
         String member = String.valueOf(userId);
 
-        // ✅ 멱등: 이미 있으면 기존 score를 유지해야 공정함
-        Long rank = redisTemplate.opsForZSet().rank(key, member);
+        Long rank = redis.opsForZSet().rank(key, member);
         if (rank == null) {
-            redisTemplate.opsForZSet().add(key, member, System.currentTimeMillis());
-            rank = redisTemplate.opsForZSet().rank(key, member);
+            // 공정성: 최초 진입 시점(오름차순) 기준
+            redis.opsForZSet().add(key, member, System.currentTimeMillis());
+            rank = redis.opsForZSet().rank(key, member);
         }
-
-        return (rank == null) ? -1L : rank + 1; // 1부터 시작
+        return (rank == null) ? -1L : rank + 1;
     }
 
     @Override
     public long getPosition(long scheduleId, long userId) {
         String key = queueKey(scheduleId);
         String member = String.valueOf(userId);
-
-        Long rank = redisTemplate.opsForZSet().rank(key, member);
+        Long rank = redis.opsForZSet().rank(key, member);
         return (rank == null) ? -1L : rank + 1;
     }
 
+    /**
+     * (옵션) 기존 인터페이스에 남아있다면 유지.
+     * QueueGate(allowedRank) 방식일 때만 사용.
+     */
     @Override
     public boolean canEnter(long scheduleId, long userId, long allowedRank) {
-        // ✅ 전역 큐 OFF(local/loadtest)
         if (!queueEnabled) return true;
-
-        long position = getPosition(scheduleId, userId);
-        return position != -1L && position <= allowedRank;
+        long pos = getPosition(scheduleId, userId);
+        return pos != -1L && pos <= allowedRank;
     }
 
-    // ========== 실전형: PASS 토큰 ==========
-    // tryIssuePass: 만료 정리 + 상위 allowedSlots 체크 + 슬롯 체크 + 토큰 발급(원자)
+    // ========== PASS token (atomic, consistent) ==========
+    // Lua contract:
+    // returns {token, expiresAtEpochMs, code}
+    // code: HAS_PASS | WAIT | FULL | ISSUED
     private static final DefaultRedisScript<List> ISSUE_PASS_SCRIPT;
     static {
         String lua = ""
@@ -83,7 +83,7 @@ public class RedisQueueStore implements QueueStore {
                 + "-- KEYS[3]=passKey\n"
                 + "-- KEYS[4]=seqKey\n"
                 + "-- ARGV[1]=nowMs\n"
-                + "-- ARGV[2]=allowedSlots\n"
+                + "-- ARGV[2]=capacity\n"
                 + "-- ARGV[3]=ttlSec\n"
                 + "-- ARGV[4]=userId\n"
                 + "-- ARGV[5]=scheduleId\n"
@@ -92,40 +92,45 @@ public class RedisQueueStore implements QueueStore {
                 + "local passKey  = KEYS[3]\n"
                 + "local seqKey   = KEYS[4]\n"
                 + "local now      = tonumber(ARGV[1])\n"
-                + "local allowed  = tonumber(ARGV[2])\n"
+                + "local cap      = tonumber(ARGV[2])\n"
                 + "local ttl      = tonumber(ARGV[3])\n"
                 + "local userId   = ARGV[4]\n"
                 + "local schedId  = ARGV[5]\n"
                 + "\n"
-                + "-- already has pass\n"
-                + "local existing = redis.call('GET', passKey)\n"
-                + "if existing then\n"
-                + "  local ttlLeft = redis.call('TTL', passKey)\n"
-                + "  if ttlLeft and ttlLeft > 0 then\n"
-                + "    return {existing, tostring(now + ttlLeft * 1000), 'HAS_PASS'}\n"
-                + "  end\n"
-                + "  redis.call('DEL', passKey)\n"
-                + "end\n"
+                + "-- safety: invalid cap/ttl => refuse\n"
+                + "if (not cap) or cap <= 0 then return {'', '0', 'BAD_CAP'} end\n"
+                + "if (not ttl) or ttl <= 0 then return {'', '0', 'BAD_TTL'} end\n"
                 + "\n"
                 + "-- cleanup expired pass\n"
                 + "redis.call('ZREMRANGEBYSCORE', passZKey, '-inf', now)\n"
                 + "\n"
-                + "-- ensure user in queue (idempotent)\n"
+                + "-- if already has pass token AND still tracked in passZ => return it\n"
+                + "local existing = redis.call('GET', passKey)\n"
+                + "if existing then\n"
+                + "  local exp = redis.call('ZSCORE', passZKey, userId)\n"
+                + "  if exp and tonumber(exp) > now then\n"
+                + "    return {existing, tostring(exp), 'HAS_PASS'}\n"
+                + "  end\n"
+                + "  -- token exists but no valid passZ => cleanup\n"
+                + "  redis.call('DEL', passKey)\n"
+                + "end\n"
+                + "\n"
+                + "-- ensure user in waiting queue\n"
                 + "local rank = redis.call('ZRANK', queueKey, userId)\n"
                 + "if not rank then\n"
                 + "  redis.call('ZADD', queueKey, now, userId)\n"
                 + "  rank = redis.call('ZRANK', queueKey, userId)\n"
                 + "end\n"
                 + "\n"
-                + "-- rank cut: only top allowed can get pass\n"
-                + "if rank and tonumber(rank) >= allowed then\n"
-                + "  return {'', '0', 'WAIT'}\n"
+                + "-- capacity full? (pass slots)\n"
+                + "local active = redis.call('ZCARD', passZKey)\n"
+                + "if active >= cap then\n"
+                + "  return {'', '0', 'FULL'}\n"
                 + "end\n"
                 + "\n"
-                + "-- slot check\n"
-                + "local active = redis.call('ZCARD', passZKey)\n"
-                + "if active >= allowed then\n"
-                + "  return {'', '0', 'FULL'}\n"
+                + "-- issue only for top cap ranks (0-based rank < cap)\n"
+                + "if (not rank) or tonumber(rank) >= cap then\n"
+                + "  return {'', '0', 'WAIT'}\n"
                 + "end\n"
                 + "\n"
                 + "-- issue token\n"
@@ -142,37 +147,40 @@ public class RedisQueueStore implements QueueStore {
         ISSUE_PASS_SCRIPT.setResultType(List.class);
     }
 
+    /**
+     * 정합성 규칙:
+     * - pass는 (passKey + passZKey score) 둘 다 유효해야 "있다"
+     * - expiresAt은 passZ score가 source of truth
+     * - Java에서 추가 SET 하지 않는다 (Lua가 원자적으로 SET/EX 수행)
+     */
     @Override
     public QueuePass getPass(long scheduleId, long userId) {
-        // 큐 OFF면 토큰 자체가 필요 없으니 null 반환해도 됨
         if (!queueEnabled) return null;
 
-        String key = passKey(scheduleId, userId);
-        String token = redisTemplate.opsForValue().get(key);
+        String token = redis.opsForValue().get(passKey(scheduleId, userId));
         if (token == null || token.isBlank()) return null;
 
-        Long ttlSec = redisTemplate.getExpire(key); // seconds
-        if (ttlSec == null || ttlSec <= 0) {
-            redisTemplate.delete(key);
+        Double expMs = redis.opsForZSet().score(passZKey(scheduleId), String.valueOf(userId));
+        long now = System.currentTimeMillis();
+        if (expMs == null || expMs.longValue() <= now) {
+            // 불일치/만료 상태 정리
+            redis.delete(passKey(scheduleId, userId));
+            redis.opsForZSet().remove(passZKey(scheduleId), String.valueOf(userId));
             return null;
         }
 
-        long expiresAt = System.currentTimeMillis() + (ttlSec * 1000);
-        // passZ는 tryIssuePass에서 정리되도록 두되, 누락됐을 때도 문제 없게 유지
-        return new QueuePass(token, expiresAt);
+        return new QueuePass(token, expMs.longValue());
     }
 
     @Override
     public QueuePass tryIssuePass(long scheduleId, long userId, long allowedSlots, long passTtlSeconds) {
-        // 큐 OFF면 항상 통과시키되, 테스트 편의상 가짜 토큰 하나 반환
-        if (!queueEnabled) {
-            long expiresAt = System.currentTimeMillis() + (passTtlSeconds * 1000);
-            return new QueuePass("BYPASS", expiresAt);
-        }
+        // 큐 OFF면 "토큰 없는 통과"
+        // (BYPASS 문자열 토큰을 뿌리면 validatePass/게이트 로직이 오염됨)
+        if (!queueEnabled) return null;
 
         long now = System.currentTimeMillis();
 
-        List<?> res = redisTemplate.execute(
+        List<?> res = redis.execute(
                 ISSUE_PASS_SCRIPT,
                 List.of(
                         queueKey(scheduleId),
@@ -194,29 +202,29 @@ public class RedisQueueStore implements QueueStore {
 
         if (token.isBlank() || expiresAt <= 0) return null;
 
-        redisTemplate.opsForValue().set(passKey(scheduleId, userId), token, passTtlSeconds, TimeUnit.SECONDS);
         return new QueuePass(token, expiresAt);
     }
 
+    /**
+     * validatePass는 "토큰 문자열 일치"만 신뢰한다.
+     * passZ만 살아있다고 통과시키면 '토큰 정합성'이 깨져서
+     * 네가 원하는 A안(키/포맷/TTL 통일) 검증이 불가능해진다.
+     */
     @Override
     public boolean validatePass(long scheduleId, long userId, String token) {
         if (!queueEnabled) return true;
         if (token == null || token.isBlank()) return false;
 
-        String pk = passKey(scheduleId, userId);
-        String stored = redisTemplate.opsForValue().get(pk);
-        if (stored != null) {
-            return stored.equals(token);
-        }
-
-        // backward/bug-safe fallback: passKey가 없더라도 passZKey에 살아있으면 통과
-        Double expMs = redisTemplate.opsForZSet().score(passZKey(scheduleId), String.valueOf(userId));
-        return expMs != null && expMs.longValue() > System.currentTimeMillis();
+        String stored = redis.opsForValue().get(passKey(scheduleId, userId));
+        return stored != null && stored.equals(token);
     }
 
+    /**
+     * release는 passKey + passZ 둘 다 제거해야 정합성 유지됨.
+     */
     @Override
     public void releasePass(long scheduleId, long userId) {
-        // passZ에서 제거
-        redisTemplate.opsForZSet().remove(passZKey(scheduleId), String.valueOf(userId));
+        redis.delete(passKey(scheduleId, userId));
+        redis.opsForZSet().remove(passZKey(scheduleId), String.valueOf(userId));
     }
 }
