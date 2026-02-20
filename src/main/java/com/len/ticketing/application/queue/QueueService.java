@@ -20,23 +20,20 @@ public class QueueService {
 
     public QueueStatusDto enter(long scheduleId, long userId) {
         long pos = queueStore.enterQueue(scheduleId, userId);
-
-        QueuePass pass = queueStore.tryIssuePass(scheduleId, userId, capacity, passTtlSeconds);
-        if (pass != null) {
-            return new QueueStatusDto(0, true, pass.token(), pass.expiresAtEpochMs());
-        }
         return new QueueStatusDto(pos, false, null, null);
     }
 
     public QueueStatusDto status(long scheduleId, long userId) {
+        // 1) 이미 pass 있으면 바로 통과
+        QueuePass pass = queueStore.getPass(scheduleId, userId);
+        if (pass != null) {
+            return new QueueStatusDto(0, true, pass.token(), pass.expiresAtEpochMs());
+        }
+
+        // 2) pass 없으면 waiting position 반환(없으면 자동 등록)
         long pos = queueStore.getPosition(scheduleId, userId);
         if (pos == -1) {
             pos = queueStore.enterQueue(scheduleId, userId);
-        }
-
-        QueuePass pass = queueStore.tryIssuePass(scheduleId, userId, capacity, passTtlSeconds);
-        if (pass != null) {
-            return new QueueStatusDto(0, true, pass.token(), pass.expiresAtEpochMs());
         }
         return new QueueStatusDto(pos, false, null, null);
     }
