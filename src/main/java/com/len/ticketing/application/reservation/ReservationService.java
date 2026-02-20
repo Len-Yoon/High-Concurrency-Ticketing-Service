@@ -7,6 +7,7 @@ import com.len.ticketing.infra.concert.SeatJpaRepository;
 import com.len.ticketing.infra.reservation.ConfirmedSeatGuardStore;
 import com.len.ticketing.infra.reservation.ReservationJpaRepository;
 import lombok.RequiredArgsConstructor;
+import org.hibernate.exception.ConstraintViolationException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -48,37 +49,16 @@ public class ReservationService {
 
         try {
             Reservation hold = Reservation.newHold(userId, scheduleId, sn, now, HOLD_TTL);
-            return reservationRepository.saveAndFlush(hold);
+
+            // ✅ saveAndFlush 금지: 커밋 시 flush로 위임
+            return reservationRepository.save(hold);
 
         } catch (DataIntegrityViolationException e) {
-            var cur = reservationRepository.findActiveLite(scheduleId, sn);
-
-            if (cur == null) {
-                Reservation hold = Reservation.newHold(userId, scheduleId, sn, now, HOLD_TTL);
-                return reservationRepository.saveAndFlush(hold);
+            // ✅ A안: uk_reservation_active_seat 충돌이면 무조건 409로 끝
+            if (isUkReservationActiveSeat(e)) {
+                throw new BusinessException(ErrorCode.SEAT_ALREADY_LOCKED); // HttpStatus.CONFLICT
             }
-
-            if ("CONFIRMED".equals(cur.getStatus())) {
-                throw new BusinessException(ErrorCode.ALREADY_RESERVED);
-            }
-
-            if ("HELD".equals(cur.getStatus())
-                    && cur.getExpiresAt() != null
-                    && cur.getExpiresAt().isBefore(now)) {
-
-                int fixed = reservationRepository.expireIfExpired(scheduleId, sn, now);
-                if (fixed > 0) {
-                    Reservation hold = Reservation.newHold(userId, scheduleId, sn, now, HOLD_TTL);
-                    return reservationRepository.saveAndFlush(hold);
-                }
-            }
-
-            if (cur.getUserId() != null && cur.getUserId().equals(userId)) {
-                return reservationRepository.findById(cur.getId())
-                        .orElseThrow(() -> new BusinessException(ErrorCode.ALREADY_HELD));
-            }
-
-            throw new BusinessException(ErrorCode.ALREADY_HELD);
+            throw e;
         }
     }
 
@@ -186,5 +166,21 @@ public class ReservationService {
         }
         String sn = seatNo.trim().toUpperCase();
         return reservationRepository.countValidHold(userId, scheduleId, sn, now) > 0;
+    }
+
+
+    private boolean isUkReservationActiveSeat(Throwable e) {
+        Throwable t = e;
+        while (t != null) {
+            if (t instanceof ConstraintViolationException cve) {
+                String name = cve.getConstraintName();
+                if (name != null && name.equalsIgnoreCase("uk_reservation_active_seat")) {
+                    return true;
+                }
+            }
+            t = t.getCause();
+        }
+        String msg = e.getMessage();
+        return msg != null && msg.contains("uk_reservation_active_seat");
     }
 }
