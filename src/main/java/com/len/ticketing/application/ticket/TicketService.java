@@ -8,8 +8,10 @@ import com.len.ticketing.domain.ticket.SeatLockStore;
 import com.len.ticketing.infra.concert.SeatJpaRepository;
 import com.len.ticketing.infra.sse.SeatChangedEvent;
 import com.len.ticketing.infra.sse.SeatSseHub;
+import org.hibernate.exception.ConstraintViolationException;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.CannotAcquireLockException;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.DeadlockLoserDataAccessException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -23,6 +25,7 @@ import java.time.LocalDateTime;
 public class TicketService {
 
     private static final long SEAT_LOCK_TTL_SECONDS = 300L; // 5분
+    private static final String UK_RESERVATION_ACTIVE_SEAT = "uk_reservation_active_seat";
 
     private final SeatJpaRepository seatRepository;
     private final QueueStore queueStore;
@@ -119,6 +122,13 @@ public class TicketService {
 
                     return new HoldResult(true, "좌석 선점에 성공했습니다. 결제를 진행해주세요.", reservationId);
 
+                } catch (DataIntegrityViolationException e) {
+                    // ✅ DB 유니크 가드(좌석당 active=1 1건) 충돌 → 정상 경쟁 상황이므로 409로 변환
+                    if (isUkReservationActiveSeat(e)) {
+                        throw new BusinessException(ErrorCode.SEAT_ALREADY_LOCKED);
+                    }
+                    throw e;
+
                 } catch (CannotAcquireLockException | DeadlockLoserDataAccessException e) {
                     if (attempt == maxAttempts) throw e;
 
@@ -134,9 +144,28 @@ public class TicketService {
             return new HoldResult(false, "좌석 선점에 실패했습니다.", null);
 
         } catch (RuntimeException e) {
+            // 락은 항상 정리 (BusinessException 포함)
             seatLockStore.releaseSeat(scheduleId, sn, userId);
             throw e;
         }
+    }
+
+    private boolean isUkReservationActiveSeat(Throwable e) {
+        // 1) Hibernate ConstraintViolationException constraintName 기준
+        Throwable t = e;
+        while (t != null) {
+            if (t instanceof ConstraintViolationException cve) {
+                String name = cve.getConstraintName();
+                if (name != null && name.equalsIgnoreCase(UK_RESERVATION_ACTIVE_SEAT)) {
+                    return true;
+                }
+            }
+            t = t.getCause();
+        }
+
+        // 2) fallback: 메시지 기반 (constraintName이 null로 오는 케이스 대비)
+        String msg = e.getMessage();
+        return msg != null && msg.contains(UK_RESERVATION_ACTIVE_SEAT);
     }
 
     public HoldResult holdSeatById(
