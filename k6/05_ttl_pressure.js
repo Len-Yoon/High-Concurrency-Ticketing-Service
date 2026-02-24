@@ -62,12 +62,12 @@ function detectQueueStatusMode() {
 function queueEnter(sid, uid) {
     return http.post(`${BASE}/api/queue/enter`, JSON.stringify({ scheduleId: sid, userId: uid }), { headers: JSON_HEADERS });
 }
+
 function queueStatus(sid, uid) {
-    const mode = detectQueueStatusMode();
-    if (mode === "GET_QS") return http.get(`${BASE}/api/queue/status?scheduleId=${sid}&userId=${uid}`, { headers: JSON_HEADERS });
-    if (mode === "POST_JSON") return http.post(`${BASE}/api/queue/status`, JSON.stringify({ scheduleId: sid, userId: uid }), { headers: JSON_HEADERS });
-    if (mode === "GET_ALT") return http.get(`${BASE}/api/queue/position?scheduleId=${sid}&userId=${uid}`, { headers: JSON_HEADERS });
-    return http.post(`${BASE}/api/queue/check`, JSON.stringify({ scheduleId: sid, userId: uid }), { headers: JSON_HEADERS });
+    return http.get(
+        `${BASE}/api/queue/status?scheduleId=${sid}&userId=${uid}`,
+        { headers: JSON_HEADERS }
+    );
 }
 
 function extractToken(obj) {
