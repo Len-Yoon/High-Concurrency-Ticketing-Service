@@ -86,17 +86,27 @@ function waitForPassToken(sid, uid) {
     queueEnter(sid, uid);
 
     let token = null;
+    let canEnter = false;
+
     while (Date.now() - start < MAX_WAIT_MS) {
         const st = queueStatus(sid, uid);
+
         if (st && st.status === 200) {
             const obj = st.json();
+
+            canEnter = (obj && obj.canEnter === true);
             token = extractToken(obj);
-            if (token) break;
+
+            // canEnter가 true인데 token이 아직 null일 수 있어서,
+            // true면 짧게 1~2번 더 폴링할 여지를 둠.
+            if (canEnter && token) break;
         }
+
         sleep(POLL_MS / 1000);
     }
+
     tPassWait.add(Date.now() - start);
-    return token;
+    return token; // token 없으면 null
 }
 
 function seatIdForVU() {

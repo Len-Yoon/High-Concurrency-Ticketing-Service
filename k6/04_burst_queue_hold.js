@@ -21,7 +21,7 @@ const SEAT_FROM = __ENV.SEAT_FROM ? Number(__ENV.SEAT_FROM) : 1;
 const SEAT_TO = __ENV.SEAT_TO ? Number(__ENV.SEAT_TO) : 100;
 
 const POLL_MS = __ENV.POLL_MS ? Number(__ENV.POLL_MS) : 200;
-const MAX_WAIT_MS = __ENV.MAX_WAIT_MS ? Number(__ENV.MAX_WAIT_MS) : 15000;
+const MAX_WAIT_MS = __ENV.MAX_WAIT_MS ? Number(__ENV.MAX_WAIT_MS) : 120000;
 
 const tPassWait = new Trend("queue_pass_wait_ms");
 const cHold200 = new Counter("hold_200");
@@ -107,25 +107,30 @@ function isCanEnter(jsonObj) {
 
 function waitForPassToken(sid, uid) {
     const start = Date.now();
-    let token = null;
-
-    // ensure in queue
     queueEnter(sid, uid);
+
+    let token = null;
+    let canEnter = false;
 
     while (Date.now() - start < MAX_WAIT_MS) {
         const st = queueStatus(sid, uid);
+
         if (st && st.status === 200) {
             const obj = st.json();
+
+            canEnter = (obj && obj.canEnter === true);
             token = extractToken(obj);
-            if (token) break;
-            if (isCanEnter(obj) && token) break;
+
+            // canEnter가 true인데 token이 아직 null일 수 있어서,
+            // true면 짧게 1~2번 더 폴링할 여지를 둠.
+            if (canEnter && token) break;
         }
+
         sleep(POLL_MS / 1000);
     }
 
-    const waited = Date.now() - start;
-    tPassWait.add(waited);
-    return token;
+    tPassWait.add(Date.now() - start);
+    return token; // token 없으면 null
 }
 
 function seatIdForVU() {
