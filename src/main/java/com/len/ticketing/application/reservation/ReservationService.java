@@ -9,6 +9,7 @@ import com.len.ticketing.infra.reservation.ReservationJpaRepository;
 import lombok.RequiredArgsConstructor;
 import org.hibernate.exception.ConstraintViolationException;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -91,43 +92,51 @@ public class ReservationService {
             throw new BusinessException(ErrorCode.INVALID_REQUEST);
         }
 
-        // 1) 원자적 confirm 시도
-        int updated = reservationRepository.confirmHold(userId, scheduleId, sn, now);
-        if (updated > 0) {
-            // 2) DB 최종 방어막: confirmed_seat_guard 삽입
-            var cur = reservationRepository.findActiveLite(scheduleId, sn);
-            if (cur == null || cur.getId() == null) {
-                throw new BusinessException(ErrorCode.HOLD_NOT_FOUND);
-            }
-
-            try {
-                confirmedSeatGuardStore.acquire(scheduleId, sn, cur.getId());
-            } catch (DataIntegrityViolationException e) {
-                throw new BusinessException(ErrorCode.ALREADY_RESERVED);
-            }
-            return;
-        }
-
-        // 3) 실패 시 상태 조회 후 에러 매핑
+        // 0) 현재 활성 예약(HELD)을 먼저 조회해서 reservationId 확보
+        //    (이미 CONFIRMED면 멱등 성공 처리)
         var cur = reservationRepository.findActiveLite(scheduleId, sn);
         if (cur == null) throw new BusinessException(ErrorCode.HOLD_NOT_FOUND);
 
         if ("CONFIRMED".equals(cur.getStatus())) {
-            throw new BusinessException(ErrorCode.ALREADY_RESERVED);
+            // 이미 확정됨 -> 멱등 성공
+            return;
         }
 
-        if ("HELD".equals(cur.getStatus())) {
-            if (cur.getUserId() != null && !cur.getUserId().equals(userId)) {
-                throw new BusinessException(ErrorCode.HOLD_NOT_FOUND); // 정책상 소유자 아니면 not found
-            }
-
-            if (cur.getExpiresAt() != null && !cur.getExpiresAt().isAfter(now)) {
-                reservationRepository.expireIfExpired(scheduleId, sn, now);
-                throw new BusinessException(ErrorCode.HOLD_EXPIRED);
-            }
+        if (!"HELD".equals(cur.getStatus())) {
+            throw new BusinessException(ErrorCode.HOLD_NOT_FOUND);
         }
 
-        throw new BusinessException(ErrorCode.HOLD_NOT_FOUND);
+        // 소유자/만료 검증 (기존 정책 유지)
+        if (cur.getUserId() != null && !cur.getUserId().equals(userId)) {
+            throw new BusinessException(ErrorCode.HOLD_NOT_FOUND); // 정책상 소유자 아니면 not found
+        }
+
+        if (cur.getExpiresAt() == null || !cur.getExpiresAt().isAfter(now)) {
+            reservationRepository.expireIfExpired(scheduleId, sn, now);
+            throw new BusinessException(ErrorCode.HOLD_EXPIRED);
+        }
+
+        Long reservationId = cur.getId();
+        if (reservationId == null) {
+            throw new BusinessException(ErrorCode.HOLD_NOT_FOUND);
+        }
+
+        // 1) DB 최종 방어막을 먼저 시도 (좌석당 1명만 통과)
+        //    중복확정/재처리 -> PK 충돌 -> 멱등 성공 처리
+        try {
+            confirmedSeatGuardStore.acquire(scheduleId, sn, reservationId);
+        } catch (DataIntegrityViolationException e) {
+            // PK(schedule_id, seat_no) 충돌 = 이미 확정됨(또는 재처리)
+            return; // 멱등 성공 처리
+        }
+
+        // 2) 원자적 confirm (내 HELD만 CONFIRMED로)
+        int updated = reservationRepository.confirmHold(userId, scheduleId, sn, now);
+        if (updated == 0) {
+            // 여기까지 왔는데 updated=0이면: 직전에 상태가 바뀐 케이스
+            // 정책상 not found로 처리
+            throw new BusinessException(ErrorCode.HOLD_NOT_FOUND);
+        }
     }
 
     // ---------- CANCEL (사용자 액션 전용) ----------
