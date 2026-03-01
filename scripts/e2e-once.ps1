@@ -3,7 +3,7 @@
 # 콘솔 출력 UTF-8 (한글 깨짐 완화)
 try { [Console]::OutputEncoding = [System.Text.Encoding]::UTF8 } catch {}
 
-$base = "http://127.0.0.1:8080"   # localhost 말고 127.0.0.1로 고정
+$base   = "http://127.0.0.1:8080"   # localhost 말고 127.0.0.1로 고정
 $userId = 1001
 $amount = 100000
 
@@ -26,7 +26,6 @@ function Curl-GetJson([string]$url, [int]$timeoutSec = 3){
   $lines = $out -split "`n"
   $code = [int]($lines[-1].Trim())
   $body = ($lines[0..($lines.Length-2)] -join "`n").Trim()
-
   return @{ code=$code; body=$body }
 }
 
@@ -42,8 +41,61 @@ function Curl-PostJson([string]$url, [string]$jsonBody, [int]$timeoutSec = 10){
   $lines = $out -split "`n"
   $code = [int]($lines[-1].Trim())
   $body = ($lines[0..($lines.Length-2)] -join "`n").Trim()
-
   return @{ code=$code; body=$body }
+}
+
+function Wait-QueuePass([int]$sid, [int]$uid, [int]$maxSec = 30){
+  # 1) enter
+  $enterBody = @{ scheduleId=$sid; userId=$uid } | ConvertTo-Json -Compress
+  $enterResp = Curl-PostJson "$base/api/queue/enter" $enterBody 10
+  if ($enterResp.code -lt 200 -or $enterResp.code -ge 300) {
+    throw ("QUEUE ENTER FAIL HTTP={0} {1}" -f $enterResp.code, $enterResp.body)
+  }
+
+  # enter 응답에 token이 없을 수 있음(enter=대기열 등록만, PASS는 advancer가 발급)
+  try { $enterJson = $enterResp.body | ConvertFrom-Json } catch { $enterJson = $null }
+
+  if ($enterJson -and $enterJson.token) {
+    Write-Host ("queue enter => token={0}" -f $enterJson.token)
+  } else {
+    Write-Host ("queue enter => ok (token will be issued later by advancer)")
+  }
+
+  # 2) status polling until canEnter=true and token exists
+  for ($i=1; $i -le $maxSec; $i++) {
+    $st = Curl-GetJson "$base/api/queue/status?scheduleId=$sid&userId=$uid" 5
+    if ($st.code -ne 200) {
+      if ($i -eq 1 -or ($i % 5 -eq 0)) {
+        Write-Host ("queue status wait... {0}s / HTTP={1} {2}" -f $i, $st.code, $st.body)
+      }
+      Start-Sleep -Seconds 1
+      continue
+    }
+
+    $stJson = $null
+    try { $stJson = $st.body | ConvertFrom-Json } catch { $stJson = $null }
+
+    $canEnter = $false
+    $token = $null
+    if ($stJson) {
+      $canEnter = [bool]$stJson.canEnter
+      $token = $stJson.token
+    }
+
+    if ($canEnter -and -not [string]::IsNullOrWhiteSpace($token)) {
+      Write-Host ("queue pass issued => token={0} expiresAt={1}" -f $token, $stJson.expiresAt)
+      return $token
+    }
+
+    if ($i -eq 1 -or ($i % 5 -eq 0)) {
+      $pos = if ($stJson) { $stJson.position } else { "?" }
+      Write-Host ("queue status... {0}s position={1} canEnter={2}" -f $i, $pos, $canEnter)
+    }
+
+    Start-Sleep -Seconds 1
+  }
+
+  throw ("QUEUE PASS TIMEOUT (>{0}s). Check QueueAdvancer schedules/logs." -f $maxSec)
 }
 
 Write-Host "[1/8] infra + backend up"
@@ -71,17 +123,14 @@ if (-not $up) {
   throw "health UP 실패"
 }
 
-Write-Host "[3/8] confirmed_seat_guard ensure"
+Write-Host "[3/8] confirmed_seat_guard ensure (minimal)"
 Db-Exec @"
 CREATE TABLE IF NOT EXISTS confirmed_seat_guard (
   schedule_id BIGINT NOT NULL,
-  seat_no VARCHAR(255) NOT NULL,
+  seat_no VARCHAR(32) NOT NULL,
   reservation_id BIGINT NOT NULL,
   confirmed_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-  PRIMARY KEY (schedule_id, seat_no),
-  UNIQUE KEY uk_confirmed_seat_guard_reservation_id (reservation_id),
-  CONSTRAINT fk_confirmed_seat_guard_reservation
-    FOREIGN KEY (reservation_id) REFERENCES reservation(id)
+  PRIMARY KEY (schedule_id, seat_no)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 "@
 
@@ -111,12 +160,15 @@ $parts = $seedLine -split "\s+"
 if ($parts.Count -lt 3) { throw "seed 파싱 실패: $seedLine" }
 
 $scheduleId = [int]$parts[0]
-$seatId = [int]$parts[1]
-$seatNo = $parts[2]
+$seatId     = [int]$parts[1]
+$seatNo     = $parts[2]
 Write-Host "seed => scheduleId=$scheduleId seatId=$seatId seatNo=$seatNo userId=$userId amount=$amount"
 
-Write-Host "[5/8] HOLD"
-$holdBody = @{ scheduleId=$scheduleId; seatId=$seatId; userId=$userId } | ConvertTo-Json -Compress
+Write-Host "[4.5/8] QUEUE enter + wait PASS"
+$queueToken = Wait-QueuePass -sid $scheduleId -uid $userId -maxSec 30
+
+Write-Host "[5/8] HOLD (with queueToken)"
+$holdBody = @{ scheduleId=$scheduleId; seatId=$seatId; userId=$userId; queueToken=$queueToken } | ConvertTo-Json -Compress
 $holdResp = Curl-PostJson "$base/api/reservations/hold" $holdBody 10
 if ($holdResp.code -lt 200 -or $holdResp.code -ge 300) {
   throw ("HOLD FAIL HTTP={0} {1}" -f $holdResp.code, $holdResp.body)
