@@ -12,7 +12,7 @@ public class ConfirmedSeatGuardStore {
 
     public void acquire(long scheduleId, String seatNo, long reservationId) {
         jdbcTemplate.update(
-                "INSERT INTO confirmed_seat_guard(schedule_id, seat_no, reservation_id, confirmed_at) VALUES (?, ?, ?, NOW())",
+                "INSERT INTO confirmed_seat_guard(schedule_id, seat_no, reservation_id) VALUES (?, ?, ?)",
                 scheduleId, seatNo, reservationId
         );
     }
