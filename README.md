@@ -361,5 +361,158 @@ p95 latency : 9.7ms
 
 ---
 
+# 🧪 Load Test Run
 
 
+```Bash
+docker run --rm ^
+ -e BASE_URL=http://host.docker.internal:8080 ^
+ -e SCHEDULE_ID=2 ^
+ -e SEAT_ID=2 ^
+ -e TOKEN_WAIT_SEC=30 ^
+ -v %CD%\k6:/scripts ^
+ grafana/k6 run --vus 80 --iterations 80 /scripts/02_contention_same_seat.js
+```
+
+--- 
+
+# ⚙️ How to Run?
+<details>
+  <summary>manual</summary>
+
+#### Start
+```Bash
+docker compose up -d
+```
+
+#### Health Check
+```Bash
+http://localhost:8080/actuator/health
+
+Expected
+{"status":"UP"}
+```
+
+</details>
+
+---
+
+# 📈 Performance Summary
+
+- Concurrent Users : 80
+- Seat : 1
+- Success : 1
+- Conflict : 79
+- p95 latency : 9.7ms
+
+---
+
+# 🧠 Key Design Decisions
+
+<details>
+  <summary>Key Diagram</summary>
+
+### Redis Queue
+```text
+Redis ZSET 기반 대기열 구현
+```
+
+장점
+- 순서 보장
+- O(logN) 삽입
+- TTL 관리 가능
+
+<br>
+
+### DB Guard
+```text
+(schedule_id, seat_no)
+Primary Key Constraint
+```
+
+이중 보호 구조
+```text
+Redis Lock
+     +
+DB Constraint
+```
+
+<br>
+
+### Event Driven Confirm
+```text
+Kafka 기반 예매 확정 처리
+```
+
+특징
+- Outbox Pattern
+- Idempotent Consumer
+- Retry 지원
+</details>
+
+---
+
+# 🧪 Test Scenarios
+
+### Seat Contention
+```text
+k6/02_contention_same_seat.js
+```
+동일 좌석 경쟁 테스트
+
+<br>
+
+### Queue TTL Redistribution
+```text
+scripts/queue-ttl-e2e.ps1
+```
+PASS TTL 만료 후 재분배 검증
+
+---
+
+# 🚢 Deployment
+### Docker Environment
+<details>
+  <summary>Deployment</summary>
+
+- MySQL
+- Redis
+- Kafka
+- Spring Boot
+- Prometheus
+- Grafana
+</details>
+
+
+---
+
+# 💡 What This Project Demonstrates
+
+<br>
+
+이 프로젝트는 약 **3개월 동안 설계와 구현, 테스트를 반복하며 완성한 고동시성 시스템 프로젝트**입니다.
+
+단순 기능 구현에 그치지 않고 실제 서비스 환경을 가정하여 대기열 시스템, 좌석 동시성 제어, 이벤트 기반 처리 구조, 부하 테스트 검증까지 
+단계적으로 구현했습니다.
+
+개발 과정에서 다음과 같은 실제 문제들을 직접 해결하며 시스템을 개선했습니다.
+
+- 고동시성 환경에서 발생하는 Race Condition 문제 해결
+- 공정한 순서를 보장하는 Redis 기반 대기열 시스템 설계
+- Redis와 DB를 함께 사용하는 다중 방어 구조 설계
+- Kafka 기반 이벤트 처리의 멱등성(idempotency) 보장
+- k6 부하 테스트를 통한 동시성 문제 재현 및 검증
+- 실제 장애 상황을 가정한 디버깅 및 안정화 작업
+
+개발 과정은 쉽지 않았지만, 반복적인 테스트와 개선을 통해 시스템이 안정적으로 동작하도록 만드는 경험을 할 수 있었습니다.
+
+이 프로젝트를 통해 다음과 같은 역량을 실제로 구현하고 검증할 수 있었습니다.
+
+- 고동시성 시스템 설계 경험
+- 데이터 정합성 보장을 위한 구조 설계
+- 이벤트 기반 아키텍처 구현 경험
+- 부하 테스트 기반 성능 검증 경험
+- Redis · Kafka · MySQL을 함께 사용하는 백엔드 시스템 구축 경험
+
+이 프로젝트는 단순한 예제 수준을 넘어, **실제 서비스 환경을 가정하고 설계한 Production-style Backend 시스템을 구현한 경험**을 
+보여주기 위한 프로젝트입니다.
