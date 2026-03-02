@@ -198,7 +198,6 @@ seat:lock:{scheduleId}:{seatNo}
 
 <br>
 
-
 Redis Lock만으로는 완전한 정합성을 보장할 수 없습니다.
 
 ```text
@@ -217,12 +216,150 @@ Redis 장애
 ```text
 confirmed_seat_guard
 ```
+
+#### Constraint
+```text
+PRIMARY KEY (schedule_id, seat_no)
+```
+
+#### 구조
+```text
+Redis Lock
+     +
+DB Primary Key Constraint
+```
+
+#### 보장사항
+- 중복 예약 방지
+- Kafka 재처리 안전성 확보
+- Race Condition 완전 차단
 </details>
 
+---
 
+# 🎬 Reservation Flow
+<details>
+  <summary>Flow Diagram</summary>
 
+<br>
 
+```text
+Queue Enter
+   │
+   ▼
+PASS Token 발급
+   │
+   ▼
+Seat Hold
+   │
+   ▼
+Payment Ready
+   │
+   ▼
+Payment Success
+   │
+   ▼
+Kafka Event
+   │
+   ▼
+Reservation Confirm
+```
+</details>
 
+--- 
+
+# ⚡ Event Driven Design
+
+<details>
+  <summary>Event Driven Diagram</summary>
+
+<br>
+
+예매 확정은 **Kafka 이벤트 기반**으로 처리 됩니다.
+```text
+Payment Success
+      │
+      ▼
+Kafka Event Publish
+      │
+      ▼
+Reservation Confirm Consumer
+```
+
+#### 특징
+- Transactional Outbox Pattern
+- Idempotent Consumer
+- Retry 안전성 확보
+</details>
+
+---
+
+# 🗄 Database Design
+
+<details>
+  <summary>confirmed_seat_guard Table</summary>
+
+<br>
+
+```SQL
+CREATE TABLE confirmed_seat_guard (
+  schedule_id BIGINT NOT NULL,
+  seat_no VARCHAR(255) NOT NULL,
+  reservation_id BIGINT NOT NULL,
+  confirmed_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+
+  PRIMARY KEY (schedule_id, seat_no)
+);
+```
+
+#### 목적
+- Redis Lock 실패 상황에서도 중복 예약 방지
+- Kafka 재처리 안전성 확보
+- 최종 정합성 보장
+</details>
+
+---
+
+# 📊 Load Test
+
+<details>
+  <summary>Seat Contention Test</summary>
+
+<br>
+
+#### Seat Contention Test
+**동일 좌석을 여러 사용자가 동시에 요청**하는 시나리오 입니다.
+```text
+Users : 80
+Seat : 1
+```
+
+#### Result
+```text
+hold success : 1
+
+hold conflict : 79
+
+checks success : 100%
+
+p95 latency : 9.7ms
+```
+
+#### 결과해석
+**80명의 사용자**가 동일 좌석을 동시에 요청한 결과
+- 정확히 1명만 성공
+- 79명 충돌 처리
+
+이는
+
+- Redis Lock 정상 동작
+- DB Guard 정상 동작
+- 동시성 제어 정상 동작
+  
+을 의미합니다.
+</details>
+
+---
 
 
 
