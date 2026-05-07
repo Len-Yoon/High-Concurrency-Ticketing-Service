@@ -59,6 +59,7 @@ Redis Lock만으로는 장애, TTL 만료, 재처리 상황에서 완전한 정�
 <details>
 <summary>Architecture Diagram</summary>
 
+<br>
 ```text
 Client / Frontend
       │
@@ -260,7 +261,7 @@ SET key userId NX EX 300
 ---
 
 ### 3. Reservation HOLD
-Redis Lock 획득 후 MySQL reservation 테이블에 HOLD 상태를 저장합니다. <br>
+Redis Lock 획득 후 MySQL reservation 테이블에 HOLD 상태를 저장합니다. <br><br>
 주요상태:
 | Status | Meaning |
 |:---|:---|
@@ -269,9 +270,122 @@ Redis Lock 획득 후 MySQL reservation 테이블에 HOLD 상태를 저장합니
 | EXPIRED | 선점 만료 |
 | CANCELLED | 사용자 취소 |
 
+<br>
 HOLD TTL:
+
 ```text
 5 minutes
 ```
 
+---
+
+### 4. Reservation Expired Job
+결제하지 않고 만료된 HOLD는 ReservationExpireJob이 주기적으로 정리합니다.
+```text
+fixedDelay = 5000ms
+```
+만료 처리 방식:
+```sql
+UPDATE reservation
+   SET status = 'EXPIRED',
+       active = 0,
+       updated_at = :now
+ WHERE status = 'HELD'
+   AND active = 1
+   AND expires_at < :now
+ ORDER BY expires_at
+ LIMIT 1000
+```
+대량 업데이트 시 락 경합과 데드락을 줄이기 위해 batch 방식으로 처리했습니다.
+
 </details>
+
+---
+
+# 🛡 DB Final Guard
+
+<details>
+<summary>DB Final Guard</summary>
+
+<br>
+Redis Lock은 빠른 선점 제어에는 효과적이지만, 최종 정합성을 완전히 보장하지는 않습니다. <br><br>
+예를 들어 다음 상황에서는 Redis만으로 부족할 수 있습니다. <br>
+* Redis 장애
+* 네트워크 지연
+* TTL 만료 시점 경쟁
+* Consumer 재처리
+* 서버 재시작
+* 동일 이벤트 중복 처리
+따라서 예매 확정 단계에서는 MySQL에 confirmed_seat_guard 테이블을 두고, <br>
+(schedule_id, seat_no)를 Primary Key로 사용했습니다.
+
+---
+
+### confirmed_seat_guard
+```sql
+CREATE TABLE IF NOT EXISTS confirmed_seat_guard (
+  schedule_id    BIGINT      NOT NULL,
+  seat_no        VARCHAR(32) NOT NULL,
+  reservation_id BIGINT      NOT NULL,
+  confirmed_at   DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (schedule_id, seat_no)
+) ENGINE=InnoDB;
+```
+
+---
+
+### Confirm Logic
+예매 확정 시 먼저 confirmed_seat_guard에 insert를 시도합니다.
+```sql
+INSERT INTO confirmed_seat_guard(schedule_id, seat_no, reservation_id)
+```
+이미 같으 ㄴ 좌석이 확정된 경우 Primary Key 충돌이 발생합니다. <br><br>
+
+이 충돌은 중복 확정 시도로 보고 멱등 성공 처리합니다.
+```text
+Redis Lock
+     +
+Reservation Status Check
+     +
+confirmed_seat_guard PK
+```
+이를 통해 동일 좌석이 여러 번 확정되는 무제를 최종적으로 방지합니다.
+
+</details>
+
+---
+
+# 💳 Payment Flow
+현재 결제는 실제 PG 연동이 아니라 Mock 결제 흐름으로 구현되어 있습니다.
+
+<details>
+<summary>Payment Flow</summary>
+
+### Payment Ready
+/api/payment/ready 요청 시 다음을 검증합니다.
+```text
+1. 좌석 존재 여부 확인
+2. 해당 사용자에게 유효한 HELD 예약이 있는지 확인
+3. DB seat.price 기준으로 결제 금액 확정
+4. payment_order 생성
+```
+결제 금액은 클라이언트 요청값이 아니라 DB의 seat.price를 기준으로 결정합니다.
+
+---
+
+### Payment Mock Success
+/api/payment/mock-success 요청 시 결제 성공을 가정하고 예매 확정을 수행합니다.
+```text
+1. payment_order 조회
+2. 이미 PAID 상태면 멱등 성공 처리
+3. reservation confirm 수행
+4. payment_order 상태를 PAID로 변경
+5. confirm 실패 시 payment_order를 CANCELLED 처리
+```
+mockSuccess()는 Propagation.NOT_SUPPORTED로 처리되어 confirm <br>
+실패 후에도 결제 주문 취소 상태를 안전하게 저장할 수 있도록 구성했습니다.
+
+</details>
+
+---
+
