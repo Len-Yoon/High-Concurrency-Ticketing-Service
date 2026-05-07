@@ -60,6 +60,7 @@ Redis Lock만으로는 장애, TTL 만료, 재처리 상황에서 완전한 정�
 <summary>Architecture Diagram</summary>
 
 <br>
+
 ```text
 Client / Frontend
       │
@@ -95,6 +96,7 @@ Spring Boot API
       └── Kafka / Redpanda
             └── confirm requested event 처리 구조
 ```
+
 </details>
 
 ---
@@ -103,6 +105,8 @@ Spring Boot API
 
 <details>
 <summary>Tech Stack</summary>
+
+<br>
 
 | Category | Stack |
 |:---|:---|
@@ -309,13 +313,14 @@ UPDATE reservation
 
 <br>
 Redis Lock은 빠른 선점 제어에는 효과적이지만, 최종 정합성을 완전히 보장하지는 않습니다. <br><br>
-예를 들어 다음 상황에서는 Redis만으로 부족할 수 있습니다. <br>
+예를 들어 다음 상황에서는 Redis만으로 부족할 수 있습니다. <br><br>
+
 * Redis 장애
 * 네트워크 지연
 * TTL 만료 시점 경쟁
 * Consumer 재처리
 * 서버 재시작
-* 동일 이벤트 중복 처리
+* 동일 이벤트 중복 처리 <br><br>
 따라서 예매 확정 단계에서는 MySQL에 confirmed_seat_guard 테이블을 두고, <br>
 (schedule_id, seat_no)를 Primary Key로 사용했습니다.
 
@@ -339,7 +344,7 @@ CREATE TABLE IF NOT EXISTS confirmed_seat_guard (
 ```sql
 INSERT INTO confirmed_seat_guard(schedule_id, seat_no, reservation_id)
 ```
-이미 같으 ㄴ 좌석이 확정된 경우 Primary Key 충돌이 발생합니다. <br><br>
+이미 같은 좌석이 확정된 경우 Primary Key 충돌이 발생합니다. <br><br>
 
 이 충돌은 중복 확정 시도로 보고 멱등 성공 처리합니다.
 ```text
@@ -388,4 +393,182 @@ mockSuccess()는 Propagation.NOT_SUPPORTED로 처리되어 confirm <br>
 </details>
 
 ---
+
+# 📩 Kafka / Outbox Design
+
+<details>
+<summary>Kafka / Outbox Design</summary>
+
+<br>
+
+프로젝트에는 Kafka 기반 예매 확정 이벤트 처리 구조가 포함되어 있습니다. <br><br>
+단, 현재 코드 기준으로 결제 성공 API는 PaymentService.mockSuccess()에서 <br>
+reservationService.confirm()을 직접 호출합니다. <br>
+Kafka/Outbox 흐름은 별도의 ConfirmCommandService, OutboxPublisher, <br>
+ConfirmRequestedConsumer 구조로 구현되어 있으며, 향후 결제 성공 이벤트 기반 확정 구조로 확장 가능한 형태입니다.
+
+---
+
+### Outbox Event 
+outbox_event 테이블은 이벤트 유실을 방지하기 위한 Transactional Outbox Pattern 구조입니다. <br>
+주요 컬럼: <br>
+| Column | Purpose |
+|:---|:---|
+| event_id |	이벤트 고유 ID |
+| topic | Kafka topic |
+| event_key | Kafka message key |
+| payload |	JSON payload |
+| status | PENDING / PUBLISHED / FAILED |
+| retry_count | 재시도 횟수 |
+| max_retry | 최대 재시도 횟수 |
+| next_retry_at | 다음 재시도 시각 |
+| last_error | 마지막 실패 사유 |
+
+---
+
+### Outbox Publisher
+OutboxPublisher는 주기적으로 PENDING 이벤트를 조회하고 Kafka로 발행합니다. <br>
+```sql
+SELECT * FROM outbox_event
+ WHERE status = 'PENDING'
+   AND next_retry_at <= NOW()
+ ORDER BY created_at
+ LIMIT :limit
+ FOR UPDATE SKIP LOCKED
+```
+특징: <br>
+
+* FOR UPDATE SKIP LOCKED로 다중 Publisher 환경에서 중복 처리 방지
+* Kafka 발행 성공 시 PUBLISHED 처리
+* 실패 시 retry_count 증가
+* Exponential Backoff 기반 재시도
+* 최대 재시도 초과 시 FAILED 처리
+* Micrometer 기반 Outbox metric 기록
+
+---
+
+### Confirm Consumer
+ConfirmRequestedConsumer는 Kafka topic을 구독합니다. 
+```text
+ticket.confirm.requested.v1
+```
+처리 흐름: 
+```text
+1. JSON payload parsing
+2. 필수 필드 검증
+3. consumer_dedup 테이블 기반 중복 이벤트 제거
+4. stale event 확인
+5. 유효 HOLD 상태 확인
+6. TicketService.confirmSeat 호출
+7. 실패 유형에 따라 skip 또는 retry 처리
+```
+
+---
+
+### Idempotency
+Consumer는 consumer_dedup 테이블에 event_id를 insert하여 이미 처리한 이벤트를 다시 처리하지 않도록 설계되어 있습니다. 
+```sql
+INSERT IGNORE INTO consumer_dedup(event_id, processed_at)
+VALUES (?, NOW())
+```
+재시도 가능한 예외가 발생하면 dedup row를 삭제하여 Kafka 재처리가 가능하도록 구성했습니다.
+
+</details>
+
+# 📡 Real-time Seat Status with SSE
+좌석 상태 변경은 SSE(Server-Sent Events)를 통해 클라이언트에 전달합니다.
+
+<details>
+<summary>Real-time Seat Status with SSE</summary>
+
+<br>
+
+Endpoint: 
+```text
+GET /api/seats/stream?scheduleId={scheduleId}
+```
+발행 이벤트:
+| Status | Meaning |
+|:---|:---|
+| HELD | 좌석 선점 중 |
+| CONFIRMED | 예매 확정 |
+| EXPIRED | 선점 만료 |
+| CANCELLED | 사용자 취소 |
+프론트엔드는 SSE 이벤트를 수신해 좌석 상태를 즉시 반영하고, 연결 불안정 상황을 대비해 주기적인 refresh도 함께 수행합니다.
+
+</details>
+
+---
+
+# 🗄 Database Design
+
+<details>
+<summary>Database Design</summary>   
+
+### Main Tables
+
+| Table | Purpose |
+|:---|:---|
+| concert | 공연 정보 |
+| schedule | 공연 회차 정보 |
+| seat | 회차별 좌석 정보 |
+| reservation | 좌석 선점/확정 상태 |
+| payment_order | 결제 주문 |
+| confirmed_seat_guard | 확정 좌석 중복 방지 |
+| outbox_event | Kafka 발행 대기 이벤트 |
+| consumer_dedup | Kafka Consumer 멱등 처리 |
+
+---
+
+### 1. concert
+
+공연 기본 정보를 저장하는 테이블입니다.
+
+| Column | Type | Description |
+|---|---|---|
+| id | BIGINT | 공연 ID, Primary Key |
+| title | VARCHAR(100) | 공연 제목 |
+| description | TEXT | 공연 설명 |
+| created_at | DATETIME | 생성 시각 |
+
+역할: <br>
+- 공연의 기본 정보를 관리합니다.
+- 하나의 공연은 여러 회차(schedule)를 가질 수 있습니다. <br><br>
+
+예시:
+```text
+concert
+- id: 1
+- title: Concert A
+- description: High traffic ticketing test concert
+```
+
+---
+
+### 2. schedule
+
+공연의 실제 회차 정보를 저장하는 테이블입니다.
+
+| Column | Type | Description |
+|---|---|---|
+| id | BIGINT | 회차 ID, Primary Key |
+| concert_id | BIGINT | 공연 ID, concert 참조 |
+| show_at | DATETIME | 공연 시작 시각 |
+| created_at | DATETIME | 생성 시각 |
+
+역할: <br>
+- 특정 공연의 회차 정보를 관리합니다.
+- 티켓팅 대기열, 좌석, 예매는 모두 schedule 단위로 동작합니다. <br><br>
+
+관계: <br>
+```text
+concert 1 : N schedule
+```
+
+하나의 공연은 여러 개의 공연 회차를 가질 수 있습니다.
+
+
+
+</details>
+
 
