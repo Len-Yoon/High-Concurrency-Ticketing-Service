@@ -10,10 +10,17 @@
 ---
 
 # 📌 Project Summary
+
+
 이 프로젝트는 사용자가 공연 회차에 입장하기 위해 대기열에 진입하고, PASS 토큰을 받은 뒤 좌석을 선점하고,<br>
 결제를 준비한 후 예매를 확정하는 흐름을 구현합니다.
 
 핵심 목표는 다음과 같습니다.
+
+<details>      
+<summary>Project Summary</summary>
+
+<br>
 
 * 순간적으로 몰리는 사용자 요청을 Redis 대기열로 제어
 * 동일 좌석에 대한 중복 선점 방지
@@ -21,13 +28,17 @@
 * 결제 준비 시 실제 유효한 HOLD 상태인지 검증
 * 예매 확정 단계에서 DB 기반 최종 방어막으로 중복 확정 방지
 * k6 부하 테스트로 동시성 제어 결과 검증
-* Prometheus/Grafana 기반 운영 지표 확인
+* Prometheus/Grafana 기반 운영 지표 확인    
+</details>
 
 ---
 
 # 🎯 Problem Definition
-### 대규모 티켓팅 시스템에서는 다음 문제가 발생합니다.
+대규모 티켓팅 시스템에서는 다음 문제가 발생합니다.
 
+<details>
+<summary>Problem Definition</summary>
+      
 #### 1. Traffic Burst
 예매 오픈 직후 수많은 사용자가 동시에 진입하면 API 서버와 DB에 순간 부하가 집중됩니다.
 #### 2. Race Condition
@@ -38,6 +49,8 @@
 좌석을 선점한 사용자가 결제하지 않고 이탈하면 해당 좌석과 입장 권한을 적절히 회수해야 합니다.
 #### 5. Final Consistency
 Redis Lock만으로는 장애, TTL 만료, 재처리 상황에서 완전한 정합성을 보장하기 어렵기 때문에 DB 레벨의 최종 방어막이 필요합니다.
+
+</details>
 
 ---
 
@@ -88,6 +101,7 @@ Spring Boot API
 # 🧰 Tech Stack
 
 <details>
+<summary>Tech Stack</summary>
 
 | Category | Stack |
 |:---|:---|
@@ -105,415 +119,159 @@ Spring Boot API
 
 ---
 
-# 🔒 Concurrency Design
-본 시스템은 **3단계 동시성 제어 구조**를 사용합니다.
-
-```text
-Queue Control
-    ↓
-Seat Lock
-    ↓
-DB Final Guard
-```
+# 🔁 Core Reservation Flow
 
 <details>
- <summary>1️⃣ Queue Control (Redis)</summary>
+<summary>Core Reservation Flow</summary>
 
-<br>
-  
-대기열 시스템은 Redis ZSET 기반으로 구현되었습니다.
-```text
-queue:{scheduleId}
-```
-#### 동작 흐름
-```text
-Queue Enter
-   │
-   ▼
-Queue Status Polling
-   │
-   ▼
-PASS Token 발급
-   │
-   ▼
-Seat Hold 가능
-```
+#### 1. Queue Enter
+   사용자가 특정 공연 회차 대기열에 진입
 
-#### Redis Keys
-```text
-queue:{scheduleId}
+#### 2. Queue Status Polling
+   사용자는 자신의 대기 순번과 입장 가능 여부를 조회
 
-queue:pass:z:{scheduleId}
+#### 3. PASS Token Issued
+   QueueAdvancer가 capacity만큼 PASS 토큰 발급
 
-queue:pass:{scheduleId}:{userId}
-```
+#### 4. Seat Hold
+   PASS 토큰을 가진 사용자만 좌석 선점 가능
 
-#### 특징
-- FIFO 순서 보장
-- Capacity 기반 입장 제어
-- PASS TTL 자동 만료
-- PASS 자동 재분배
+#### 5. Payment Ready
+   유효한 HOLD 상태인지 검증 후 payment_order 생성
 
-#### 설계 결정
-Immediate PASS 발급 방식 대신
+#### 6. Payment Mock Success
+   결제 성공을 가정하고 예매 확정 처리
 
+#### 7. Reservation Confirm
+   confirmed_seat_guard를 통해 최종 중복 확정 방지
 
-**Scheduled Queue Advancement 방식**을 선택했습니다.
-
-이 방식은
-
-- Burst 트래픽 안정화
-- Capacity 제어 가능
-- TTL 재분배 가능
-- Queue 공정성 유지
-  
-라는 장점이 있습니다.
 </details>
 
+---
+
+# 🚦Queue System
+
 <details>
-  <summary>2️⃣ Seat Lock (Redis Distributed Lock)</summary>
+<summary>Queue System</summary>
 
-<br>
-  
-Redis Lock만으로는 완전한 정합성을 보장할 수 없습니다.
+### Purpose
+대기열은 예매 오픈 직후 트래픽이 한 번에 서버로 유입되는 것을 막기 위해 구현했습니다. <br>
+Redis ZSET을 사용하여 사용자 진입 순서를 기록하고, 별도의 QueueAdvancer가 <br>
+일정 주기마다 입장 가능한 사용자에게 PASS 토큰을 발급합니다.
 
+---
+
+### Redis Keys
+| Key | Pupose |
+|:---|:---|
+| queue:{scheduleId} | 대기 중인 사용자 목록 |
+| queue:pass:z:{scheduleId} | PASS 발급 사용자와 만료 시각 관리 |
+| queue:pass:seq:{scheduleId} | PASS 토큰 sequence |
+| queue:advance:lock | QueueAdvancer 중복 실행 방지용 락 |
+
+---
+
+### Queue Enter
+사용자가 대기열에 진입하면 queue:{scheduleId} ZSET에 userId를 추가합니다.
+```text
+member = userId
+score  = currentTimeMillis
+```
+기존에 이미 대기열에 들어간 사용자라면 중복 추가하지 않고 기존 rank를 반환합니다.
+
+---
+
+### Queue Status
+사용자는 /api/queue/status를 통해 현재 상태를 조회합니다.
+* PASS가 있으면 canEnter=true, token, expiresAt 반환
+* PASS가 없으면 현재 대기 순번 반환
+* 대기열에도 없으면 자동으로 대기열에 등록
+
+---
+
+### Scheduled Queue Advancement
+이 프로젝트는 사용자가 요청할 때마다 즉시 PASS를 발급하는 방식 대신, <br>
+**Scheduled Queue Advancement** 방식을 사용합니다. 
+<br><bt>
+QueueAdvancer가 일정 주기로 실행되며 다음 작업을 수행합니다.
+
+```text
+1. queue:advance:lock 획득
+2. active scheduleId 스캔
+3. 만료된 PASS 제거
+4. 현재 PASS 수 확인
+5. capacity보다 부족한 만큼 waiting queue에서 사용자 pop
+6. PASS 토큰 발급
+7. waiting queue에서 제거
+```
+
+기본 실행 주기:
+```text
+ticketing.queue.advance-interval-ms=200
+```
+
+</details>
+
+---
+
+# 🔐 Why Scheduled Advancement?
+
+<details>
+<summary>Why Scheduled Advancement</summary>
+
+### 좌석 선점은 다음 구조로 처리합니다.
+```text
+Queue Token Validation
+        ↓
+Redis Seat Lock
+        ↓
+Reservation HOLD Insert
+        ↓
+SSE Seat Event Publish
+```
+---
+
+### 1. Queue Token Validation
+좌석 선점 요청 시 queue 기능이 켜져 있으면 PASS 토큰을 검증합니다. <br>
+토큰이 없거나 Redis에 저장된 토큰과 일치하지 않으면 좌석 선점을 허용하지 않습니다.
+
+```text
+queue:pass:{scheduleId}:{userId}
+```
+검증 실패 시 사용자는 대기열로 다시 유도됩니다.
+
+---
+
+### 2. Redis Seat Lock
+동일 좌석에 대한 동시 접근을 막기 위해 Redis Lock을 사용합니다.
 ```text
 seat:lock:{scheduleId}:{seatNo}
 ```
-
-#### 특징
-- SET NX EX 기반 Atomic Lock
-- TTL 자동 해제
-- Lua Script Owner 검증
-- 동시 클릭 시 1명만 성공
-
-#### 역할
-- 동일 좌석 동시 접근 방지
-- 빠른 실패 응답 제공
-- DB 부하 감소
-
-</details>
-
-<details>
-  <summary>3️⃣ DB Final Guard</summary>
-
-<br>
-
-Redis Lock만으로는 완전한 정합성을 보장할 수 없습니다.
-
+구현 방식:
 ```text
-네트워크 장애
-
-Kafka 재처리
-
-Consumer 재시작
-
-Redis 장애
+SET key userId NX EX 300
 ```
-
-따라서 DB Primary Key 기반 최종 방어막을 구성했습니다.
-
-#### Table
-```text
-confirmed_seat_guard
-```
-
-#### Constraint
-```text
-PRIMARY KEY (schedule_id, seat_no)
-```
-
-#### 구조
-```text
-Redis Lock
-     +
-DB Primary Key Constraint
-```
-
-#### 보장사항
-- 중복 예약 방지
-- Kafka 재처리 안전성 확보
-- Race Condition 완전 차단
-</details>
+특징: <br>
+* NX 옵션으로 이미 선점된 좌석은 중복 선점 불가
+* EX 옵션으로 5분 TTL 자동 만료
+* release 시 Lua Script로 owner 확인 후 삭제
+* 소유자가 아닌 사용자가 다른 사용자의 lock을 해제하지 못하도록 보호
 
 ---
 
-# 🎬 Reservation Flow
-<details>
-  <summary>Flow Diagram</summary>
+### 3. Reservation HOLD
+Redis Lock 획득 후 MySQL reservation 테이블에 HOLD 상태를 저장합니다. <br>
+주요상태:
+| Status | Meaning |
+|:---|:---|
+| HELD | 좌석 선점 중 |
+| CONFIRMED | 예매 확정 |
+| EXPIRED | 선점 만료 |
+| CANCELLED | 사용자 취소 |
 
-<br>
-
+HOLD TTL:
 ```text
-Queue Enter
-   │
-   ▼
-PASS Token 발급
-   │
-   ▼
-Seat Hold
-   │
-   ▼
-Payment Ready
-   │
-   ▼
-Payment Success
-   │
-   ▼
-Kafka Event
-   │
-   ▼
-Reservation Confirm
-```
-</details>
-
---- 
-
-# ⚡ Event Driven Design
-
-<details>
-  <summary>Event Driven Diagram</summary>
-
-<br>
-
-예매 확정은 **Kafka 이벤트 기반**으로 처리 됩니다.
-```text
-Payment Success
-      │
-      ▼
-Kafka Event Publish
-      │
-      ▼
-Reservation Confirm Consumer
-```
-
-#### 특징
-- Transactional Outbox Pattern
-- Idempotent Consumer
-- Retry 안전성 확보
-</details>
-
----
-
-# 🗄 Database Design
-
-<details>
-  <summary>confirmed_seat_guard Table</summary>
-
-<br>
-
-```SQL
-CREATE TABLE confirmed_seat_guard (
-  schedule_id BIGINT NOT NULL,
-  seat_no VARCHAR(255) NOT NULL,
-  reservation_id BIGINT NOT NULL,
-  confirmed_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-
-  PRIMARY KEY (schedule_id, seat_no)
-);
-```
-
-#### 목적
-- Redis Lock 실패 상황에서도 중복 예약 방지
-- Kafka 재처리 안전성 확보
-- 최종 정합성 보장
-</details>
-
----
-
-# 📊 Load Test
-
-<details>
-  <summary>Seat Contention Test</summary>
-
-<br>
-
-#### Seat Contention Test
-**동일 좌석을 여러 사용자가 동시에 요청**하는 시나리오 입니다.
-```text
-Users : 80
-Seat : 1
-```
-
-#### Result
-```text
-hold success : 1
-
-hold conflict : 79
-
-checks success : 100%
-
-p95 latency : 9.7ms
-```
-
-#### 결과해석
-**80명의 사용자**가 동일 좌석을 동시에 요청한 결과
-- 정확히 1명만 성공
-- 79명 충돌 처리
-
-이는
-
-- Redis Lock 정상 동작
-- DB Guard 정상 동작
-- 동시성 제어 정상 동작
-  
-을 의미합니다.
-</details>
-
----
-
-# 🧪 Load Test Run
-
-
-```Bash
-docker run --rm ^
- -e BASE_URL=http://host.docker.internal:8080 ^
- -e SCHEDULE_ID=2 ^
- -e SEAT_ID=2 ^
- -e TOKEN_WAIT_SEC=30 ^
- -v %CD%\k6:/scripts ^
- grafana/k6 run --vus 80 --iterations 80 /scripts/02_contention_same_seat.js
-```
-
---- 
-
-# ⚙️ How to Run?
-<details>
-  <summary>manual</summary>
-
-#### Start
-```Bash
-docker compose up -d
-```
-
-#### Health Check
-```Bash
-http://localhost:8080/actuator/health
-
-Expected
-{"status":"UP"}
+5 minutes
 ```
 
 </details>
-
----
-
-# 📈 Performance Summary
-
-- Concurrent Users : 80
-- Seat : 1
-- Success : 1
-- Conflict : 79
-- p95 latency : 9.7ms
-
----
-
-# 🧠 Key Design Decisions
-
-<details>
-  <summary>Key Diagram</summary>
-
-### Redis Queue
-```text
-Redis ZSET 기반 대기열 구현
-```
-
-장점
-- 순서 보장
-- O(logN) 삽입
-- TTL 관리 가능
-
-<br>
-
-### DB Guard
-```text
-(schedule_id, seat_no)
-Primary Key Constraint
-```
-
-이중 보호 구조
-```text
-Redis Lock
-     +
-DB Constraint
-```
-
-<br>
-
-### Event Driven Confirm
-```text
-Kafka 기반 예매 확정 처리
-```
-
-특징
-- Outbox Pattern
-- Idempotent Consumer
-- Retry 지원
-</details>
-
----
-
-# 🧪 Test Scenarios
-
-### Seat Contention
-```text
-k6/02_contention_same_seat.js
-```
-동일 좌석 경쟁 테스트
-
-<br>
-
-### Queue TTL Redistribution
-```text
-scripts/queue-ttl-e2e.ps1
-```
-PASS TTL 만료 후 재분배 검증
-
----
-
-# 🚢 Deployment
-### Docker Environment
-<details>
-  <summary>Deployment</summary>
-
-- MySQL
-- Redis
-- Kafka
-- Spring Boot
-- Prometheus
-- Grafana
-</details>
-
-
----
-
-# 💡 What This Project Demonstrates
-
-<br>
-
-이 프로젝트는 약 **3개월 동안 설계와 구현, 테스트를 반복하며 완성한 고동시성 시스템 프로젝트**입니다.
-
-단순 기능 구현에 그치지 않고 실제 서비스 환경을 가정하여 대기열 시스템, 좌석 동시성 제어, 이벤트 기반 처리 구조, 부하 테스트 검증까지 
-단계적으로 구현했습니다.
-
-개발 과정에서 다음과 같은 실제 문제들을 직접 해결하며 시스템을 개선했습니다.
-
-- 고동시성 환경에서 발생하는 Race Condition 문제 해결
-- 공정한 순서를 보장하는 Redis 기반 대기열 시스템 설계
-- Redis와 DB를 함께 사용하는 다중 방어 구조 설계
-- Kafka 기반 이벤트 처리의 멱등성(idempotency) 보장
-- k6 부하 테스트를 통한 동시성 문제 재현 및 검증
-- 실제 장애 상황을 가정한 디버깅 및 안정화 작업
-
-개발 과정은 쉽지 않았지만, 반복적인 테스트와 개선을 통해 시스템이 안정적으로 동작하도록 만드는 경험을 할 수 있었습니다.
-
-이 프로젝트를 통해 다음과 같은 역량을 실제로 구현하고 검증할 수 있었습니다.
-
-- 고동시성 시스템 설계 경험
-- 데이터 정합성 보장을 위한 구조 설계
-- 이벤트 기반 아키텍처 구현 경험
-- 부하 테스트 기반 성능 검증 경험
-- Redis · Kafka · MySQL을 함께 사용하는 백엔드 시스템 구축 경험
-
-이 프로젝트는 단순한 예제 수준을 넘어, **실제 서비스 환경을 가정하고 설계한 Production-style Backend 시스템을 구현한 경험**을 
-보여주기 위한 프로젝트입니다.
