@@ -558,7 +558,7 @@ concert
 
 역할: <br>
 - 특정 공연의 회차 정보를 관리합니다.
-- 티켓팅 대기열, 좌석, 예매는 모두 schedule 단위로 동작합니다. <br><br>
+- 티켓팅 대기열, 좌석, 예매는 모두 schedule 단위로 동작합니다. <br>
 
 관계: <br>
 ```text
@@ -567,8 +567,368 @@ concert 1 : N schedule
 
 하나의 공연은 여러 개의 공연 회차를 가질 수 있습니다.
 
+---
 
+### 3. seat
+
+공연 회차별 좌석 정보를 저장하는 테이블 입니다.
+
+| Column | Type | Description |
+|---|---|---|
+| id | BIGINT | 좌석 ID, Primary Key |
+| schedule_id | BIGINT | 회차 ID, schedule 참조 |
+| seat_no | VARCHAR(20) | 좌석 번호 |
+| price | INT | 좌석 가격 |
+| created_at | DATETIME | 생성 시각 |
+
+제약 조건: 
+```text
+UNIQUE(schedule_id, seat_no)
+```
+
+역할: <br>
+- 특정 회차의 좌석 정보를 관리합니다.
+- 같은 회차 안에서 동일한 좌석 번호가 중복 생성되지 않도록 제약 조건을 둡니다.
+- 결제 금액은 클라이언트 요청값이 아니라 `seat.price`를 기준으로 결정됩니다. <br>
+
+예시:
+```text
+schedule_id = 1
+seat_no = A1
+price = 100000
+```
+
+---
+
+### 4. reservation
+
+좌석 선점과 예매 확정 상태를 저장하는 핵심 테이블 입니다.
+
+| Column | Type | Description |
+|---|---|---|
+| id | BIGINT | 예매 ID, Primary Key |
+| user_id | BIGINT | 사용자 ID |
+| schedule_id | BIGINT | 회차 ID |
+| seat_no | VARCHAR(20) | 좌석 번호 |
+| status | VARCHAR(20) | 예매 상태 |
+| active | INT | 현재 유효 여부 |
+| expires_at | DATETIME | 좌석 선점 만료 시각 |
+| created_at | DATETIME | 생성 시각 |
+| updated_at | DATETIME | 수정 시각 |
+
+상태: 
+| Status | Meaning |
+|---|---|
+| HELD | 좌석 선점 중 |
+| CONFIRMED | 예매 확정 |
+| EXPIRED | 선점 시간 만료 |
+| CANCELLED | 사용자 취소 |
+
+active 값 의미:
+| active | Meaning |
+|---|---|
+| 1 | 현재 유효한 예매 또는 선점 |
+| 0 | 만료 또는 취소되어 비활성화된 이력 |
+
+역할: <br>
+좌석의 상태 전이를 관리합니다.
+```text
+HELD
+  ↓
+CONFIRMED
+
+HELD
+  ↓
+EXPIRED
+
+HELD
+  ↓
+CANCELLED
+```
+
+주요 설계 포인트: <br>
+1. 좌석을 선점하면 테이블에 'HELD' 상태로 저장됩니다.
+```text
+status = HELD
+active = 1
+expires_at = now + 5 minutes
+```
+
+2. 5분 안에 결제하지 않으면 'ReservationExpireJob'이 해당 row를 만료 처리합니다.
+```text
+status = EXPIRED
+active = 0
+```
+
+3. 결제가 성공하면 해당 reservation은 'CONFIRMED' 상태가 됩니다.
+```text
+status = CONFIRMED
+active = 1
+```
+
+주요 인덱스: 
+```text
+idx_reservation_schedule_seat_active
+(schedule_id, seat_no, active)
+
+idx_reservation_expire_scan
+(status, active, expires_at)
+```
+
+인덱스 목적:
+| Index | Purpose |
+|---|---|
+| idx_reservation_schedule_seat_active | 특정 좌석의 현재 점유 상태 조회 |
+| idx_reservation_expire_scan | 만료 대상 HELD 예약 빠르게 조회 |
+
+---
+
+### 5. payment_order
+
+결제 준비 및 결제 결과를 저장하는 테이블입니다.
+
+| Column | Type | Description |
+|---|---|---|
+| id | BIGINT | 결제 주문 ID, Primary Key |
+| user_id | BIGINT | 사용자 ID |
+| schedule_id | BIGINT | 회차 ID |
+| seat_no | VARCHAR(20) | 좌석 번호 |
+| amount | INT | 결제 금액 |
+| status | VARCHAR(20) | 결제 상태 |
+| order_no | VARCHAR(50) | 주문 번호 |
+| fail_reason | VARCHAR(255) | 실패 또는 취소 사유 |
+| created_at | DATETIME | 생성 시각 |
+| updated_at | DATETIME | 수정 시각 |
+
+상태:
+| Status | Meaning |
+|---|---|
+| READY | 결제 준비 완료 |
+| PAID | 결제 성공 |
+| CANCELLED | 결제 취소 |
+| FAILED | 결제 실패 |
+
+제약조건:
+```text
+UNIQUE(order_no)
+```
+
+역할: <br>
+- 사용자가 유효한 HOLD 상태를 가진 경우에만 결제 주문을 생성합니다.
+- 결제 금액은 DB의 `seat.price`를 기준으로 확정합니다.
+- 결제 성공 시 reservation confirm을 수행합니다.
+- confirm 실패 시 `payment_order`를 `CANCELLED` 상태로 변경합니다. <br>
+
+결제흐름:
+```text
+Payment Ready
+   ↓
+payment_order 생성
+   ↓
+Mock Payment Success
+   ↓
+reservation confirm
+   ↓
+payment_order PAID 처리
+```
+
+---
+
+### 6. confirmed_seat_guard
+
+예매 확전 단계에서 동일 좌석이 중복 확정되는 것을 막기 위한 최종 방어 테이블입니다.
+
+| Column | Type | Description |
+|---|---|---|
+| schedule_id | BIGINT | 회차 ID |
+| seat_no | VARCHAR(32) | 좌석 번호 |
+| reservation_id | BIGINT | 확정된 reservation ID |
+| confirmed_at | DATETIME | 확정 시각 |
+
+기본키:
+```text
+PRIMARY KEY(schedule_id, seat_no)
+```
+
+역할: <br>
+- Redis 장애
+- 네트워크 지연
+- TTL 만료 시점 경쟁
+- 서버 재시작
+- Kafka Consumer 재처리
+- 동일 이벤트 중복 처리 <br><br>
+
+그래서 최종 예매 확정 단계에서 `confirmed_seat_guard`에 먼저 insert를 시도합니다.
+
+```text
+INSERT INTO confirmed_seat_guard(schedule_id, seat_no, reservation_id)
+```
+
+핵심설계:
+```text
+Redis Lock
+     +
+Reservation Status Check
+     +
+confirmed_seat_guard PK
+```
+
+---
+
+### 7. outbox_event
+
+kafka 이벤트 발행의 신뢰성을 높이기 위한 Outbox 테이블입니다.
+
+| Column | Type | Description |
+|---|---|---|
+| event_id | VARCHAR(64) | 이벤트 ID, Primary Key |
+| topic | VARCHAR(120) | Kafka Topic |
+| event_key | VARCHAR(120) | Kafka Message Key |
+| payload | JSON | 이벤트 Payload |
+| status | VARCHAR(20) | Outbox 상태 |
+| retry_count | INT | 현재 재시도 횟수 |
+| max_retry | INT | 최대 재시도 횟수 |
+| next_retry_at | DATETIME | 다음 재시도 시각 |
+| published_at | DATETIME | Kafka 발행 완료 시각 |
+| last_error | VARCHAR(500) | 마지막 실패 사유 |
+| created_at | DATETIME | 생성 시각 |
+| updated_at | DATETIME | 수정 시각 |
+
+상태:
+| Status | Meaning |
+|---|---|
+| PENDING | Kafka 발행 대기 |
+| PUBLISHED | Kafka 발행 완료 |
+| FAILED | 최대 재시도 초과로 실패 |
+
+역할: <br>
+DB 상태 변경과 Kafka 메시지 발행을 직접 하나의 트랜잭션으로 묶기는 어렵습니다. <br>
+따라서 이벤트를 먼저 DB에 저장하고, 별도 Publisher가 Kafka로 발행합니다.
+```text
+Business Transaction
+   ↓
+outbox_event 저장
+   ↓
+OutboxPublisher 조회
+   ↓
+Kafka Publish
+   ↓
+PUBLISHED 처리
+```
+
+Publisher 조회 커리:
+```sql
+SELECT *
+  FROM outbox_event
+ WHERE status = 'PENDING'
+   AND next_retry_at <= NOW()
+ ORDER BY created_at
+ LIMIT :limit
+ FOR UPDATE SKIP LOCKED
+```
+
+설계 포인트:
+- `FOR UPDATE SKIP LOCKED`로 다중 Publisher 환경에서 중복 처리 방지
+- 발행 실패 시 `retry_count` 증가
+- Exponential Backoff 방식으로 재시도
+- 최대 재시도 초과 시 `FAILED` 처리
+- 발행 성공 시 `PUBLISHED` 처리
+
+---
+
+### 8. consumer_dedup
+Kafka Consumer의 멱등 처리를 위해 필요한 테이블입니다. <br>
+
+| Column | Type | Description |
+|---|---|---|
+| event_id | VARCHAR(64) | Kafka Event ID, Primary Key |
+| processed_at | DATETIME | 처리 시각 |
+
+권장 DLL:
+```sql
+CREATE TABLE IF NOT EXISTS consumer_dedup (
+  event_id     VARCHAR(64) NOT NULL,
+  processed_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (event_id)
+) ENGINE=InnoDB;
+```
+
+역할:
+Kafka는 장애나 재시도 상황에서 같은 메시지가 다시 전달될 수 있습니다. <br>
+Consumer는 이벤트 처리 전에 `consumer_dedup`에 `event_id`를 insert합니다.
+
+```sql
+INSERT IGNORE INTO consumer_dedup(event_id, processed_at)
+VALUES (?, NOW())
+```
+이미 존재하는 `event_id`라면 중복 이벤트로 판단하고 처리하지 않습니다.
+
+처리흐름:
+```text
+Kafka Message Receive
+   ↓
+consumer_dedup insert
+   ↓
+insert 성공 → 최초 처리
+insert 실패 → 중복 이벤트 skip
+```
+
+재시도 가능한 예외가 발생하면 dedup row를 삭제하여 Kafka 재처리가 가능하도록 구성되어 있습니다.
 
 </details>
 
+---
 
+# 🧪 Load Test
+부하 테스트는 k6로 작성되어 있습니다.
+
+<details>
+<summary>Load Test</summary>
+
+| Script | Purpose | 
+|---|---|
+| 01_smoke_token_hold_confirm.js | Queue → Hold → Confirm 기본 흐름 확인용 |
+| 02_contention_same_seat.js | 동일 좌석 동시 선점 경쟁 테스트 |
+| 03_burst_queue_hold.js | 대량 사용자 Queue → PASS → Hold 흐름 테스트 |
+| 04_ttl_pressure.js | Queue / TTL 압박 상황 테스트 |
+
+---
+
+### Seat Contention Test
+동일 좌석에 80명의 사용자가 동시에 접근하는 시나리오입니다.
+```text
+Users : 80
+Seat  : 1
+```
+
+기대결과:
+```text
+hold success  : 1
+hold conflict : 79
+```
+이 테스트는 다음을 검증합니다. <br>
+* Redis Seat Lock이 동일 좌석 동시 접근을 막는지
+* 하나의 사용자만 좌석 선점에 성공하는지
+* 나머지 사용자가 정상적으로 409 Conflict를 받는지
+* 서버 오류가 아니라 정상적인 경쟁 실패로 처리되는지
+
+---
+
+### Queue TTL Redistribution Test
+queue-ttl-e2e.ps1은 PASS TTL 만료 후 입장 권한이 다음 사용자에게 재분배되는지 검증합니다. <br><br>
+검증흐름:
+```text
+1. 여러 사용자를 queue에 등록
+2. 현재 PASS holder 확인
+3. PASS token과 TTL 확인
+4. TTL 만료 대기
+5. zombie pass 여부 확인
+6. 다음 PASS holder 확인
+7. 새 token으로 HOLD 성공 여부 확인
+```
+
+</details>
+
+---
+
+# 🚀 How to Run
