@@ -932,3 +932,121 @@ queue-ttl-e2e.ps1은 PASS TTL 만료 후 입장 권한이 다음 사용자에게
 ---
 
 # 🚀 How to Run
+
+<details>
+<summary>How to Run</summary> 
+
+### 1. Start Infrastructure and Application
+```text
+docker compose up -d
+```
+실행되는 구성:
+```text
+MySQL 8.4
+Redis 7.2
+Redpanda
+Spring Boot Backend
+React Frontend
+```
+
+---
+
+### 2. Health Check
+```text
+GET http://localhost:8080/actuator/health
+```
+Expected
+```text
+{"status":"UP"}
+```
+
+---
+
+### 3. Queue Enter
+```text
+POST /api/queue/enter
+Content-Type: application/json
+
+{
+  "scheduleId": 1,
+  "userId": 1001
+}
+```
+
+---
+
+### 4. Queue Status
+```text
+GET /api/queue/status?scheduleId=1&userId=1001
+```
+PASS 발급 전:
+```text
+{
+  "position": 1,
+  "canEnter": false,
+  "token": null,
+  "expiresAt": null
+}
+```
+PASS 발급 후:
+```text
+{
+  "position": 0,
+  "canEnter": true,
+  "token": "...",
+  "expiresAt": 1760000000000
+}
+```
+
+---
+
+### 5. Hold Seat
+```text
+POST /api/reservations/hold
+Content-Type: application/json
+X-QUEUE-TOKEN: {queueToken}
+
+{
+  "scheduleId": 1,
+  "seatNo": "A1",
+  "userId": 1001,
+  "queueToken": "{queueToken}"
+}
+```
+또는 seatId 기반 요청:
+```text
+{
+  "scheduleId": 1,
+  "seatId": 1,
+  "userId": 1001,
+  "queueToken": "{queueToken}"
+}
+```
+
+--- 
+
+### 6. Payment Ready
+```text
+POST /api/payment/ready
+Content-Type: application/json
+
+{
+  "scheduleId": 1,
+  "seatNo": "A1",
+  "userId": 1001
+}
+```
+
+---
+
+### 7. Payment Mock Success
+```text
+POST /api/payment/mock-success
+Content-Type: application/json
+
+{
+  "orderNo": "PO-..."
+}
+```
+
+</details>
