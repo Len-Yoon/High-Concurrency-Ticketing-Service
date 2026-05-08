@@ -1050,3 +1050,84 @@ Content-Type: application/json
 ```
 
 </details>
+
+---
+
+# 🧭 API Summary
+
+<details>
+<summary>API Summary</summary>   
+
+| Method | Endpoint | Purpose |
+|---|---|---|
+| GET | /api/concerts | 공연 목록 조회 | 
+| GET | /api/concerts/{concertId}/schedules | 공연 회차 조회 | 
+| GET | /api/schedules/{scheduleId}/seats | 회차별 좌석 목록 조회 | 
+| POST | /api/queue/enter | 대기열 진입 | 
+| GET | /api/queue/status | 대기열 상태 조회 | 
+| GET | /api/seats?scheduleId= | 좌석 상태 조회 | 
+| GET | /api/seats/available?scheduleId= | 예약 가능 좌석 조회 | 
+| GET | /api/seats/stream?scheduleId= | SSE 좌석 변경 스트림 | 
+| POST | /api/reservations/hold | 좌석 선점 | 
+| POST | /api/ticket/hold | 좌석 선점 wrapper | 
+| POST | /api/payment/ready | 결제 준비 | 
+| POST | /api/payment/mock-success | Mock 결제 성공 처리 | 
+  
+</details>
+
+---
+
+# 🧠 Key Design Decisions
+
+<details>
+<summary>Key Design Decisions</summary>
+
+### 1. Redis ZSET을 사용한 이유 <br>
+대기열은 순서 보장이 중요합니다. <br>
+Redis ZSET은 score 기준 정렬을 제공하므로 사용자의 최초 진입 시각을 <br>
+score로 저장하면 선착순 대기열을 구현할 수 있습니다. <br><br>
+또한 rank 조회가 가능하여 현재 대기 순번을 사용자에게 제공할 수 있습니다.
+
+### 2. 즉시 입장 방식 대신 Scheduled Advancement를 선택한 이유
+즉시 입장 방식은 구현이 단순하지만, 많은 사용자가 동시에 status/enter 요청을 <br>
+보낼 때 입장 판정 로직이 요청마다 반복됩니다. <br><br>
+Scheduled Advancement 방식은 입장 권한 발급을 별도 스케줄러에서 일괄 처리하므로 <br>
+capacity 제어와 PASS TTL 재분배가 명확해집니다.
+
+### 3. Redis Lock만 사용하지 않은 이유
+Redis Lock은 빠르고 DB 부하를 줄이는 데 효과적입니다. <br><br>
+하지만 Redis는 최종 데이터 저장소가 아니며, TTL 만료나 장애 상황에서는 정합성 보장이 약해질 수 있습니다. <br><br>
+따라서 Redis Lock은 1차 방어선으로 사용하고, MySQL의 confirmed_seat_guard를 최종 방어선으로 두었습니다.
+
+### 4. Payment Ready에서 사용자별 유효 HOLD를 조회한 이유
+기존 방식처럼 scheduleId + seatNo 기준 active row를 조회하면, 같은 좌석에 과거 CONFIRMED row와 <br>
+현재 HELD row가 같이 남아 있는 경우 단건 조회가 깨질 수 있습니다. <br><br>
+이를 방지하기 위해 findLatestValidHoldForUpdate에서 userId + scheduleId + seatNo + HELD + active <br>
++ 만료 전 조건으로 유효 HOLD를 제한하고, LIMIT 1 FOR UPDATE로 단건을 강제했습니다.
+
+### 5. OutBox PAttern을 둔 이유
+DB 상태 변경과 Kafka 발행을 하나의 트랜잭션으로 완전히 묶기는 어렵습니다. <br><br>
+따라서 이벤트를 먼저 DB의 outbox_event에 저장하고, 별도 Publisher가 Kafka로 발행하는 구조를 두었습니다. <br><br>
+이 방식은 메시지 유실 가능성을 줄이고, 실패한 이벤트를 재시도할 수 있게 합니다.
+
+</details>
+
+---
+
+# 💡 What I Learned
+
+<details>
+<summary>What I Learned</summary>    
+
+이 프로젝트를 통해 단순 기능 구현보다 중요한 것은 “동시에 많은 요청이 들어왔을 때 시스템이 어떻게 안전하게 실패하고, <br>
+어떻게 최종 정합성을 지키는가”라는 점이라는 것을 경험했습니다. <br><br>
+특히 Redis Lock만으로 모든 문제를 해결하려 하기보다, Redis는 빠른 1차 제어 수단으로 사용하고 DB 제약 조건을 <br>
+최종 방어선으로 두는 구조가 중요하다는 점을 배웠습니다. <br><br>
+또한 대기열, TTL, 좌석 선점, 결제 준비, 예매 확정, 만료 처리처럼 각각의 기능은 단순해 보여도 실제로 연결하면 상태 전이가 복잡해지고, <br>
+이 과정에서 멱등성과 재처리 가능성을 고려해야 한다는 점을 확인했습니다. <br><br>
+부하 테스트를 통해 동시성 문제가 이론적인 문제가 아니라 실제로 재현 가능한 문제임을 확인했고, <br>
+테스트 결과를 기반으로 구조를 개선하는 경험을 할 수 있었습니다.
+      
+</details>
+
+
