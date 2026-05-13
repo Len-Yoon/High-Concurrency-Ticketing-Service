@@ -62,39 +62,26 @@ Redis Lock만으로는 장애, TTL 만료, 재처리 상황에서 완전한 정�
 <br>
 
 ```text
-Client / Frontend
-      │
-      ▼
-Spring Boot API
-      │
-      ├── Queue API
-      │     └── Redis ZSET 기반 waiting queue / pass token
-      │
-      ├── Reservation API
-      │     └── Redis seat lock + reservation hold
-      │
-      ├── Payment API
-      │     └── payment_order 생성 및 mock 결제 성공 처리
-      │
-      ├── Seat API
-      │     └── 좌석 상태 조회 + SSE 실시간 변경 이벤트
-      │
-      ├── MySQL
-      │     ├── concert
-      │     ├── schedule
-      │     ├── seat
-      │     ├── reservation
-      │     ├── payment_order
-      │     ├── confirmed_seat_guard
-      │     └── outbox_event
-      │
-      ├── Redis
-      │     ├── waiting queue
-      │     ├── pass token
-      │     └── seat lock
-      │
-      └── Kafka / Redpanda
-            └── confirm requested event 처리 구조
+Client / React Frontend
+        ↓
+Spring Boot Backend
+        ↓
+Redis
+- waiting queue
+- pass token
+- seat lock
+
+MySQL
+- concert
+- schedule
+- seat
+- reservation
+- payment_order
+- confirmed_seat_guard
+- outbox_event
+
+Kafka / Redpanda
+- ticket.confirm.requested.v1
 ```
 
 </details>
