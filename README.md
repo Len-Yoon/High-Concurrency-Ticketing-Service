@@ -27,6 +27,7 @@
 * 좌석 선점 후 일정 시간 내 결제하지 않으면 자동 만료
 * 결제 준비 시 실제 유효한 HOLD 상태인지 검증
 * 예매 확정 단계에서 DB 기반 최종 방어막으로 중복 확정 방지
+* Kafka/Outbox 기반 확정 이벤트 처리 구조 구현
 * k6 부하 테스트로 동시성 제어 결과 검증
 * Prometheus/Grafana 기반 운영 지표 확인    
 </details>
@@ -79,9 +80,11 @@ MySQL
 - payment_order
 - confirmed_seat_guard
 - outbox_event
+- consumer_dedup
 
 Kafka / Redpanda
 - ticket.confirm.requested.v1
+- confirm event processing extension
 ```
 
 </details>
@@ -137,8 +140,10 @@ Kafka / Redpanda
    POST /api/payment/mock-success
 
 #### 7. ReservationService.confirm()
-   confirmed_seat_guard INSERT <br>
-   reservation CONFIRMED 처리
+   현재 기본 결제 성공 흐름은 `PaymentService.mockSuccess()`에서 <br>
+   `reservationService.confirm()`을 직접 호출하는 동기 확정 방식입니다. <br>
+   확정 시 `confirmed_seat_guard`에 먼저 INSERT하여 동일 좌석의 중복 확정을 방지하고, <br>
+   이후 reservation 상태를 CONFIRMED로 변경합니다.
 </details>
 
 ---
@@ -208,10 +213,10 @@ ticketing.queue.advance-interval-ms=200
 
 ---
 
-# 🔐 Why Scheduled Advancement?
+# 🔐 eat Hold Concurrency Control
 
 <details>
-<summary>Why Scheduled Advancement</summary>
+<summary>eat Hold Concurrency Control</summary>
 
 ### 좌석 선점은 다음 구조로 처리합니다.
 ```text
@@ -311,7 +316,9 @@ Redis Lock은 빠른 선점 제어에는 효과적이지만, 최종 정합성을
 * 서버 재시작
 * 동일 이벤트 중복 처리 <br><br>
 따라서 예매 확정 단계에서는 MySQL에 confirmed_seat_guard 테이블을 두고, <br>
-(schedule_id, seat_no)를 Primary Key로 사용했습니다.
+(schedule_id, seat_no)를 Primary Key로 사용했습니다. <br><br>
+
+이 테이블은 좌석 선점 단계가 아니라, 최종 예매 확정 단계의 중복 확정을 방지하기 위한 방어막입니다.
 
 ---
 
@@ -372,9 +379,11 @@ confirmed_seat_guard PK
 ```text
 1. payment_order 조회
 2. 이미 PAID 상태면 멱등 성공 처리
-3. reservation confirm 수행
-4. payment_order 상태를 PAID로 변경
-5. confirm 실패 시 payment_order를 CANCELLED 처리
+3. reservationService.confirm() 직접 호출
+4. confirmed_seat_guard INSERT로 최종 중복 확정 방지
+5. reservation 상태를 CONFIRMED로 변경
+6. payment_order 상태를 PAID로 변경
+7. confirm 실패 시 payment_order를 CANCELLED 처리
 ```
 mockSuccess()는 Propagation.NOT_SUPPORTED로 처리되어 confirm <br>
 실패 후에도 결제 주문 취소 상태를 안전하게 저장할 수 있도록 구성했습니다.
@@ -390,11 +399,13 @@ mockSuccess()는 Propagation.NOT_SUPPORTED로 처리되어 confirm <br>
 
 <br>
 
-프로젝트에는 Kafka 기반 예매 확정 이벤트 처리 구조가 포함되어 있습니다. <br><br>
-단, 현재 코드 기준으로 결제 성공 API는 PaymentService.mockSuccess()에서 <br>
-reservationService.confirm()을 직접 호출합니다. <br>
-Kafka/Outbox 흐름은 별도의 ConfirmCommandService, OutboxPublisher, <br>
-ConfirmRequestedConsumer 구조로 구현되어 있으며, 향후 결제 성공 이벤트 기반 확정 구조로 확장 가능한 형태입니다.
+프로젝트에는 Kafka/Outbox 기반 예매 확정 이벤트 처리 구조가 구현되어 있습니다. <br><br>
+다만 현재 기본 결제 성공 API(`/api/payment/mock-success`)는 <br>
+`PaymentService.mockSuccess()`에서 `reservationService.confirm()`을 직접 호출하는 동기 확정 방식으로 동작합니다. <br><br>
+
+Kafka/Outbox 흐름은 `ConfirmCommandService`, `OutboxPublisher`, `ConfirmRequestedConsumer`로 구성되어 있으며, <br>
+결제 성공 이후 확정 요청을 비동기 이벤트로 처리하기 위한 확장 구조입니다. <br><br>
+따라서 현재 구현은 다음 두 흐름을 모두 포함합니다. <br>
 
 ---
 
