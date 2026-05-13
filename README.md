@@ -1,6 +1,9 @@
 # 🎟 High-Concurrency Ticketing Service
 
 > Redis Queue + Redis Lock + MySQL + Kafka/Outbox 기반 **고동시성 티켓팅 백엔드 프로젝트**
+>
+> Kafka/Outbox 기반 확정 이벤트 처리 구조를 함께 구현해,
+> 향후 비동기 예매 확정 플로우로 확장 가능하도록 설계했습니다.
 
 대규모 티켓팅 서비스에서 발생하는 **트래픽 폭증, 대기열 제어, 좌석 중복 선점, 결제 전 좌석 보관, 최종 예매 확정 정합성** 
 <br>문제를 직접 설계하고 구현한 백엔드 프로젝트입니다.
@@ -27,6 +30,7 @@
 * 좌석 선점 후 일정 시간 내 결제하지 않으면 자동 만료
 * 결제 준비 시 실제 유효한 HOLD 상태인지 검증
 * 예매 확정 단계에서 DB 기반 최종 방어막으로 중복 확정 방지
+* Kafka/Outbox 기반 확정 이벤트 처리 구조 구현
 * k6 부하 테스트로 동시성 제어 결과 검증
 * Prometheus/Grafana 기반 운영 지표 확인    
 </details>
@@ -39,15 +43,15 @@
 <details>
 <summary>Problem Definition</summary>
       
-#### 1. Traffic Burst
+### 1. Traffic Burst
 예매 오픈 직후 수많은 사용자가 동시에 진입하면 API 서버와 DB에 순간 부하가 집중됩니다.
-#### 2. Race Condition
+### 2. Race Condition
 여러 사용자가 같은 좌석을 동시에 클릭하면 동일 좌석에 대해 중복 선점 또는 중복 예약이 발생할 수 있습니다.
-#### 3. Fairness
+### 3. Fairness
 먼저 들어온 사용자가 먼저 입장하지 못하면 선착순 서비스의 공정성이 깨질 수 있습니다.
-#### 4. Expiration Handling
+### 4. Expiration Handling
 좌석을 선점한 사용자가 결제하지 않고 이탈하면 해당 좌석과 입장 권한을 적절히 회수해야 합니다.
-#### 5. Final Consistency
+### 5. Final Consistency
 Redis Lock만으로는 장애, TTL 만료, 재처리 상황에서 완전한 정합성을 보장하기 어렵기 때문에 DB 레벨의 최종 방어막이 필요합니다.
 
 </details>
@@ -62,39 +66,28 @@ Redis Lock만으로는 장애, TTL 만료, 재처리 상황에서 완전한 정�
 <br>
 
 ```text
-Client / Frontend
-      │
-      ▼
-Spring Boot API
-      │
-      ├── Queue API
-      │     └── Redis ZSET 기반 waiting queue / pass token
-      │
-      ├── Reservation API
-      │     └── Redis seat lock + reservation hold
-      │
-      ├── Payment API
-      │     └── payment_order 생성 및 mock 결제 성공 처리
-      │
-      ├── Seat API
-      │     └── 좌석 상태 조회 + SSE 실시간 변경 이벤트
-      │
-      ├── MySQL
-      │     ├── concert
-      │     ├── schedule
-      │     ├── seat
-      │     ├── reservation
-      │     ├── payment_order
-      │     ├── confirmed_seat_guard
-      │     └── outbox_event
-      │
-      ├── Redis
-      │     ├── waiting queue
-      │     ├── pass token
-      │     └── seat lock
-      │
-      └── Kafka / Redpanda
-            └── confirm requested event 처리 구조
+Client / React Frontend
+        ↓
+Spring Boot Backend
+        ↓
+Redis
+- waiting queue
+- pass token
+- seat lock
+
+MySQL
+- concert
+- schedule
+- seat
+- reservation
+- payment_order
+- confirmed_seat_guard
+- outbox_event
+- consumer_dedup
+
+Kafka / Redpanda
+- ticket.confirm.requested.v1
+- confirm event processing extension
 ```
 
 </details>
@@ -129,27 +122,31 @@ Spring Boot API
 <details>
 <summary>Core Reservation Flow</summary>
 
-#### 1. Queue Enter
-   사용자가 특정 공연 회차 대기열에 진입
+#### 1. 사용자가 Queue 진입
+   POST /api/queue/enter
 
-#### 2. Queue Status Polling
-   사용자는 자신의 대기 순번과 입장 가능 여부를 조회
+#### 2. QueueAdvancer가 주기적으로 PASS 토큰 발급
+   Redis queue:* → queue:pass:*
 
-#### 3. PASS Token Issued
-   QueueAdvancer가 capacity만큼 PASS 토큰 발급
+#### 3. 사용자가 Queue Status 조회
+   GET /api/queue/status?scheduleId=&userId=
 
-#### 4. Seat Hold
-   PASS 토큰을 가진 사용자만 좌석 선점 가능
+#### 4. PASS 토큰을 가지고 좌석 선점
+   POST /api/reservations/hold <br>
+   또는 <br>
+   POST /api/ticket/hold
 
 #### 5. Payment Ready
-   유효한 HOLD 상태인지 검증 후 payment_order 생성
+   POST /api/payment/ready
 
-#### 6. Payment Mock Success
-   결제 성공을 가정하고 예매 확정 처리
+#### 6. Mock Payment Success
+   POST /api/payment/mock-success
 
-#### 7. Reservation Confirm
-   confirmed_seat_guard를 통해 최종 중복 확정 방지
-
+#### 7. ReservationService.confirm()
+   현재 기본 결제 성공 흐름은 `PaymentService.mockSuccess()`에서 <br>
+   `reservationService.confirm()`을 직접 호출하는 동기 확정 방식입니다. <br>
+   확정 시 `confirmed_seat_guard`에 먼저 INSERT하여 동일 좌석의 중복 확정을 방지하고, <br>
+   이후 reservation 상태를 CONFIRMED로 변경합니다.
 </details>
 
 ---
@@ -167,7 +164,7 @@ Redis ZSET을 사용하여 사용자 진입 순서를 기록하고, 별도의 Qu
 ---
 
 ### Redis Keys
-| Key | Pupose |
+| Key | Purpose |
 |:---|:---|
 | queue:{scheduleId} | 대기 중인 사용자 목록 |
 | queue:pass:z:{scheduleId} | PASS 발급 사용자와 만료 시각 관리 |
@@ -197,7 +194,7 @@ score  = currentTimeMillis
 ### Scheduled Queue Advancement
 이 프로젝트는 사용자가 요청할 때마다 즉시 PASS를 발급하는 방식 대신, <br>
 **Scheduled Queue Advancement** 방식을 사용합니다. 
-<br><bt>
+<br><br>
 QueueAdvancer가 일정 주기로 실행되며 다음 작업을 수행합니다.
 
 ```text
@@ -219,10 +216,10 @@ ticketing.queue.advance-interval-ms=200
 
 ---
 
-# 🔐 Why Scheduled Advancement?
+# 🔐 Seat Hold Concurrency Control
 
 <details>
-<summary>Why Scheduled Advancement</summary>
+<summary>Seat Hold Concurrency Control</summary>
 
 ### 좌석 선점은 다음 구조로 처리합니다.
 ```text
@@ -322,7 +319,9 @@ Redis Lock은 빠른 선점 제어에는 효과적이지만, 최종 정합성을
 * 서버 재시작
 * 동일 이벤트 중복 처리 <br><br>
 따라서 예매 확정 단계에서는 MySQL에 confirmed_seat_guard 테이블을 두고, <br>
-(schedule_id, seat_no)를 Primary Key로 사용했습니다.
+(schedule_id, seat_no)를 Primary Key로 사용했습니다. <br><br>
+
+이 테이블은 좌석 선점 단계가 아니라, 최종 예매 확정 단계의 중복 확정을 방지하기 위한 방어막입니다.
 
 ---
 
@@ -354,7 +353,7 @@ Reservation Status Check
      +
 confirmed_seat_guard PK
 ```
-이를 통해 동일 좌석이 여러 번 확정되는 무제를 최종적으로 방지합니다.
+이를 통해 동일 좌석이 여러 번 확정되는 문제를 최종적으로 방지합니다.
 
 </details>
 
@@ -383,9 +382,11 @@ confirmed_seat_guard PK
 ```text
 1. payment_order 조회
 2. 이미 PAID 상태면 멱등 성공 처리
-3. reservation confirm 수행
-4. payment_order 상태를 PAID로 변경
-5. confirm 실패 시 payment_order를 CANCELLED 처리
+3. reservationService.confirm() 직접 호출
+4. confirmed_seat_guard INSERT로 최종 중복 확정 방지
+5. reservation 상태를 CONFIRMED로 변경
+6. payment_order 상태를 PAID로 변경
+7. confirm 실패 시 payment_order를 CANCELLED 처리
 ```
 mockSuccess()는 Propagation.NOT_SUPPORTED로 처리되어 confirm <br>
 실패 후에도 결제 주문 취소 상태를 안전하게 저장할 수 있도록 구성했습니다.
@@ -401,11 +402,45 @@ mockSuccess()는 Propagation.NOT_SUPPORTED로 처리되어 confirm <br>
 
 <br>
 
-프로젝트에는 Kafka 기반 예매 확정 이벤트 처리 구조가 포함되어 있습니다. <br><br>
-단, 현재 코드 기준으로 결제 성공 API는 PaymentService.mockSuccess()에서 <br>
-reservationService.confirm()을 직접 호출합니다. <br>
-Kafka/Outbox 흐름은 별도의 ConfirmCommandService, OutboxPublisher, <br>
-ConfirmRequestedConsumer 구조로 구현되어 있으며, 향후 결제 성공 이벤트 기반 확정 구조로 확장 가능한 형태입니다.
+프로젝트에는 Kafka/Outbox 기반 예매 확정 이벤트 처리 구조가 구현되어 있습니다. <br><br>
+다만 현재 기본 결제 성공 API(`/api/payment/mock-success`)는 <br>
+`PaymentService.mockSuccess()`에서 `reservationService.confirm()`을 직접 호출하는 동기 확정 방식으로 동작합니다. <br><br>
+
+Kafka/Outbox 흐름은 `ConfirmCommandService`, `OutboxPublisher`, `ConfirmRequestedConsumer`로 구성되어 있으며, <br>
+결제 성공 이후 확정 요청을 비동기 이벤트로 처리하기 위한 확장 구조입니다. <br><br>
+따라서 현재 구현은 다음 두 흐름을 모두 포함합니다. <br>
+
+현재 기본 결제 확정 흐름:
+```text
+Payment Mock Success
+   ↓
+PaymentService.mockSuccess()
+   ↓
+reservationService.confirm()
+   ↓
+confirmed_seat_guard INSERT
+   ↓
+reservation CONFIRMED
+   ↓
+payment_order PAID
+```
+
+확장 가능한 Kafka/Outbox 기반 확정 흐름:
+```text
+ConfirmCommandService
+   ↓
+outbox_event 저장
+   ↓
+OutboxPublisher
+   ↓
+Kafka / Redpanda
+   ↓
+ConfirmRequestedConsumer
+   ↓
+consumer_dedup 중복 이벤트 확인
+   ↓
+TicketService.confirmSeat()
+```
 
 ---
 
@@ -736,7 +771,7 @@ payment_order PAID 처리
 
 ### 6. confirmed_seat_guard
 
-예매 확전 단계에서 동일 좌석이 중복 확정되는 것을 막기 위한 최종 방어 테이블입니다.
+예매 확정 단계에서 동일 좌석이 중복 확정되는 것을 막기 위한 최종 방어 테이블입니다.
 
 | Column | Type | Description |
 |---|---|---|
@@ -803,7 +838,10 @@ kafka 이벤트 발행의 신뢰성을 높이기 위한 Outbox 테이블입니�
 
 역할: <br>
 DB 상태 변경과 Kafka 메시지 발행을 직접 하나의 트랜잭션으로 묶기는 어렵습니다. <br>
-따라서 이벤트를 먼저 DB에 저장하고, 별도 Publisher가 Kafka로 발행합니다.
+따라서 확정 요청 이벤트를 먼저 DB에 저장하고, 별도 Publisher가 Kafka로 발행하는 구조를 구현했습니다. <br><br>
+
+현재 기본 payment mock-success 흐름은 동기 confirm 방식이며,<br>
+outbox_event는 향후 비동기 확정 처리로 전환하기 위한 확장 구조입니다.
 ```text
 Business Transaction
    ↓
@@ -816,7 +854,7 @@ Kafka Publish
 PUBLISHED 처리
 ```
 
-Publisher 조회 커리:
+Publisher 조회 쿼리:
 ```sql
 SELECT *
   FROM outbox_event
@@ -844,7 +882,7 @@ Kafka Consumer의 멱등 처리를 위해 필요한 테이블입니다. <br>
 | event_id | VARCHAR(64) | Kafka Event ID, Primary Key |
 | processed_at | DATETIME | 처리 시각 |
 
-권장 DLL:
+권장 DDL:
 ```sql
 CREATE TABLE IF NOT EXISTS consumer_dedup (
   event_id     VARCHAR(64) NOT NULL,
@@ -1097,7 +1135,8 @@ capacity 제어와 PASS TTL 재분배가 명확해집니다.
 ### 3. Redis Lock만 사용하지 않은 이유
 Redis Lock은 빠르고 DB 부하를 줄이는 데 효과적입니다. <br><br>
 하지만 Redis는 최종 데이터 저장소가 아니며, TTL 만료나 장애 상황에서는 정합성 보장이 약해질 수 있습니다. <br><br>
-따라서 Redis Lock은 1차 방어선으로 사용하고, MySQL의 confirmed_seat_guard를 최종 방어선으로 두었습니다.
+따라서 Redis Lock은 좌석 선점 단계의 1차 방어선으로 사용하고, <br>
+예매 확정 단계에서는 MySQL의 confirmed_seat_guard를 최종 방어선으로 두었습니다.
 
 ### 4. Payment Ready에서 사용자별 유효 HOLD를 조회한 이유
 기존 방식처럼 scheduleId + seatNo 기준 active row를 조회하면, 같은 좌석에 과거 CONFIRMED row와 <br>
@@ -1105,10 +1144,15 @@ Redis Lock은 빠르고 DB 부하를 줄이는 데 효과적입니다. <br><br>
 이를 방지하기 위해 findLatestValidHoldForUpdate에서 userId + scheduleId + seatNo + HELD + active <br>
 + 만료 전 조건으로 유효 HOLD를 제한하고, LIMIT 1 FOR UPDATE로 단건을 강제했습니다.
 
-### 5. OutBox PAttern을 둔 이유
-DB 상태 변경과 Kafka 발행을 하나의 트랜잭션으로 완전히 묶기는 어렵습니다. <br><br>
-따라서 이벤트를 먼저 DB의 outbox_event에 저장하고, 별도 Publisher가 Kafka로 발행하는 구조를 두었습니다. <br><br>
-이 방식은 메시지 유실 가능성을 줄이고, 실패한 이벤트를 재시도할 수 있게 합니다.
+### 5. OutBox Pattern을 둔 이유
+결제 성공 이후 예매 확정을 비동기 이벤트 기반으로 확장할 경우,<br>
+DB 상태 변경과 Kafka 메시지 발행을 하나의 로컬 트랜잭션으로 묶기 어렵습니다. <br><br>
+
+이를 보완하기 위해 `outbox_event` 테이블에 확정 요청 이벤트를 먼저 저장하고, <br>
+별도 `OutboxPublisher`가 Kafka로 발행하는 구조를 구현했습니다. <br><br>
+
+현재 기본 `payment mock-success` API는 동기 confirm 방식으로 동작하지만, <br>
+Outbox 구조를 통해 향후 다음 흐름으로 확장할 수 있습니다.
 
 </details>
 
