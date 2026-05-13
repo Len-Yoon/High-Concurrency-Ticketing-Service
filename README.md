@@ -116,27 +116,29 @@ Kafka / Redpanda
 <details>
 <summary>Core Reservation Flow</summary>
 
-#### 1. Queue Enter
-   사용자가 특정 공연 회차 대기열에 진입
+#### 1. 사용자가 Queue 진입
+   POST /api/queue/enter
 
-#### 2. Queue Status Polling
-   사용자는 자신의 대기 순번과 입장 가능 여부를 조회
+#### 2. QueueAdvancer가 주기적으로 PASS 토큰 발급
+   Redis queue:* → queue:pass:*
 
-#### 3. PASS Token Issued
-   QueueAdvancer가 capacity만큼 PASS 토큰 발급
+#### 3. 사용자가 Queue Status 조회
+   GET /api/queue/status?scheduleId=&userId=
 
-#### 4. Seat Hold
-   PASS 토큰을 가진 사용자만 좌석 선점 가능
+#### 4. PASS 토큰을 가지고 좌석 선점
+   POST /api/reservations/hold <br>
+   또는 <br>
+   POST /api/ticket/hold
 
 #### 5. Payment Ready
-   유효한 HOLD 상태인지 검증 후 payment_order 생성
+   POST /api/payment/ready
 
-#### 6. Payment Mock Success
-   결제 성공을 가정하고 예매 확정 처리
+#### 6. Mock Payment Success
+   POST /api/payment/mock-success
 
-#### 7. Reservation Confirm
-   confirmed_seat_guard를 통해 최종 중복 확정 방지
-
+#### 7. ReservationService.confirm()
+   confirmed_seat_guard INSERT <br>
+   reservation CONFIRMED 처리
 </details>
 
 ---
