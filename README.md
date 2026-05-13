@@ -39,15 +39,15 @@
 <details>
 <summary>Problem Definition</summary>
       
-#### 1. Traffic Burst
+### 1. Traffic Burst
 예매 오픈 직후 수많은 사용자가 동시에 진입하면 API 서버와 DB에 순간 부하가 집중됩니다.
-#### 2. Race Condition
+### 2. Race Condition
 여러 사용자가 같은 좌석을 동시에 클릭하면 동일 좌석에 대해 중복 선점 또는 중복 예약이 발생할 수 있습니다.
-#### 3. Fairness
+### 3. Fairness
 먼저 들어온 사용자가 먼저 입장하지 못하면 선착순 서비스의 공정성이 깨질 수 있습니다.
-#### 4. Expiration Handling
+### 4. Expiration Handling
 좌석을 선점한 사용자가 결제하지 않고 이탈하면 해당 좌석과 입장 권한을 적절히 회수해야 합니다.
-#### 5. Final Consistency
+### 5. Final Consistency
 Redis Lock만으로는 장애, TTL 만료, 재처리 상황에서 완전한 정합성을 보장하기 어렵기 때문에 DB 레벨의 최종 방어막이 필요합니다.
 
 </details>
